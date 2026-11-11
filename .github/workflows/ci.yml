@@ -1,0 +1,172 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PYTHON_VERSION: "3.12"
+  NODE_VERSION: "24"
+  # electron-builder: never try to sign or publish from CI
+  CSC_IDENTITY_AUTO_DISCOVERY: "false"
+
+jobs:
+  test:
+    name: Tests (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v5
+
+      - id: py
+        uses: actions/setup-python@v6
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: engine/requirements*.txt
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - name: Install ffmpeg (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg xvfb
+
+      - name: Install ffmpeg (macOS)
+        if: runner.os == 'macOS'
+        env:
+          HOMEBREW_NO_AUTO_UPDATE: "1"
+          HOMEBREW_NO_INSTALL_CLEANUP: "1"
+        run: brew install ffmpeg
+
+      - name: Install ffmpeg (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          choco install ffmpeg -y --no-progress
+          echo "C:/ProgramData/chocolatey/bin" >> "$GITHUB_PATH"
+
+      - name: Point the app and scripts at the CI Python
+        run: echo "RIPPER_PYTHON=${{ steps.py.outputs.python-path }}" >> "$GITHUB_ENV"
+
+      - name: Install Python dependencies
+        run: |
+          "$RIPPER_PYTHON" -m pip install --upgrade pip
+          "$RIPPER_PYTHON" -m pip install -r engine/requirements.txt
+
+      # Run the HQ (AI) Demucs test on one OS only (CPU torch is a big download).
+      - name: Install CPU torch + Demucs (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          "$RIPPER_PYTHON" -m pip install torch torchaudio --index-url https://download.pytorch.org/whl/cpu
+          "$RIPPER_PYTHON" -m pip install demucs==4.1.0
+
+      - name: Cache Demucs weights
+        if: runner.os == 'Linux'
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/torch/hub
+          key: demucs-weights-htdemucs-v1
+
+      - name: Install Node dependencies
+        run: npm ci
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Build UI
+        run: npm run build
+
+      - name: Engine tests (pytest)
+        run: npm run test:engine
+
+      - name: UI unit tests (vitest)
+        run: npm run test:ui
+
+      - name: End-to-end tests (Electron + Playwright, Linux with real X11 drags)
+        if: runner.os == 'Linux'
+        run: xvfb-run -a npm run e2e -w desktop
+
+      - name: End-to-end tests (Electron + Playwright)
+        if: runner.os != 'Linux'
+        run: npm run e2e -w desktop
+
+      - name: Smoke test
+        run: bash scripts/smoke.sh
+
+      - name: Upload Playwright results
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-results-${{ matrix.os }}
+          path: desktop/test-results/
+          if-no-files-found: ignore
+
+  installers:
+    name: Installer (${{ matrix.os }})
+    needs: test
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            script: dist:mac
+            artifact: the-ripper-macos
+            files: desktop/release/*.dmg
+          - os: windows-latest
+            script: dist:win
+            artifact: the-ripper-windows
+            files: desktop/release/*.exe
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v5
+
+      - id: py
+        uses: actions/setup-python@v6
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: engine/requirements*.txt
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - name: Install Python dependencies
+        run: |
+          echo "RIPPER_PYTHON=${{ steps.py.outputs.python-path }}" >> "$GITHUB_ENV"
+          "${{ steps.py.outputs.python-path }}" -m pip install --upgrade pip
+          "${{ steps.py.outputs.python-path }}" -m pip install -r engine/requirements.txt -r engine/requirements-build.txt
+
+      - name: Install Node dependencies
+        run: npm ci
+
+      - name: Build installer (UI + PyInstaller engine + electron-builder)
+        run: npm run ${{ matrix.script }}
+
+      - name: Upload installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: ${{ matrix.files }}
+          if-no-files-found: error
+          retention-days: 14

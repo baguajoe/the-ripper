@@ -25,8 +25,9 @@ asarUnpack:
 mac:
   category: public.app-category.music
   target:
+    # Builds for the machine's own arch: the bundled PyInstaller engine can't be
+    # cross-compiled, so an Intel dmg must be built on an Intel Mac.
     - target: dmg
-      arch: [arm64, x64]
   icon: assets/icon.png
   hardenedRuntime: true
   entitlements: entitlements.mac.plist
