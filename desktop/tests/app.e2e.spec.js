@@ -37,7 +37,13 @@ test.beforeAll(async () => {
       ...(REAL_OS_DRAG ? {} : { RIPPER_E2E_FAKE_OS_DRAG: '1' }),
     },
   })
-  win = await app.firstWindow()
+  // Surface the app's (and engine's) own logs in the test output, e.g. for CI failures.
+  app.process().stdout?.on('data', (d) => process.stdout.write(`[app] ${d}`))
+  app.process().stderr?.on('data', (d) => {
+    const text = String(d).split('\n').filter((l) => l && !/dbus|Fontconfig/.test(l)).join('\n')
+    if (text) process.stderr.write(`[app] ${text}\n`)
+  })
+  win = await app.firstWindow({ timeout: 60_000 })
   win.on('console', (m) => { if (m.type() === 'error') consoleErrors.push(m.text()) })
   win.on('pageerror', (e) => consoleErrors.push(`pageerror: ${e.message}`))
 })
@@ -72,7 +78,8 @@ test('boot → upload → analyze → chop → pads → stems → drag → expor
   const fx = fixtures()
 
   // --- app boots and the backend is healthy
-  await expect(win.getByTestId('engine-status')).toHaveAttribute('data-ok', 'true')
+  // first start of a cold Python/librosa can be slow on CI runners
+  await expect(win.getByTestId('engine-status')).toHaveAttribute('data-ok', 'true', { timeout: 120_000 })
   const health = await win.evaluate(async () => {
     const e = await window.ripper.getEngine()
     return (await fetch(`${e.baseUrl}/api/v1/health`)).json()
