@@ -1,0 +1,25 @@
+{
+  "name": "the-ripper",
+  "private": true,
+  "version": "1.0.0",
+  "description": "The Ripper — producer tool: link/WAV/MP3 -> beat grid -> chops, stems, drag-to-DAW",
+  "workspaces": ["ui", "desktop"],
+  "scripts": {
+    "dev": "npm run dev -w desktop",
+    "build": "npm run build -w ui",
+    "lint": "npm run lint -w ui && npm run lint -w desktop",
+    "test": "npm run test:engine && npm run test:ui && npm run test:e2e",
+    "test:engine": "node scripts/py.mjs -m pytest",
+    "test:ui": "npm test -w ui",
+    "test:e2e": "npm run build -w ui && npm run e2e -w desktop",
+    "fixtures": "node scripts/py.mjs -m engine.tests.fixtures",
+    "build:engine": "node scripts/py.mjs scripts/build_engine.py",
+    "dist:mac": "npm run build && npm run build:engine && npm run dist:mac -w desktop",
+    "dist:win": "npm run build && npm run build:engine && npm run dist:win -w desktop",
+    "dist:linux": "npm run build && npm run build:engine && npm run dist:linux -w desktop",
+    "smoke": "bash scripts/smoke.sh"
+  },
+  "engines": {
+    "node": ">=20.19"
+  }
+}

@@ -1,0 +1,106 @@
+"""ffmpeg / ffprobe helpers."""
+from __future__ import annotations
+
+import json
+import shutil
+import subprocess
+import sys
+from pathlib import Path
+
+import numpy as np
+import soundfile as sf
+
+from ..jobs import JobError
+
+FFMPEG_INSTALL_HINT = (
+    "ffmpeg was not found on PATH. The Ripper needs ffmpeg + ffprobe to import audio.\n"
+    "  macOS:   brew install ffmpeg\n"
+    "  Windows: winget install Gyan.FFmpeg   (or choco install ffmpeg), then restart\n"
+    "  Linux:   sudo apt install ffmpeg      (or your distro's package)\n"
+    "Or set RIPPER_FFMPEG / RIPPER_FFPROBE to the full path of the binaries."
+)
+
+_NO_WINDOW = 0x08000000 if sys.platform.startswith("win") else 0  # CREATE_NO_WINDOW
+
+
+def _bundled(name: str) -> str | None:
+    """ffmpeg shipped next to the frozen engine executable (see desktop/vendor/ffmpeg)."""
+    if not getattr(sys, "frozen", False):
+        return None
+    exe = Path(sys.executable).parent / (name + (".exe" if sys.platform.startswith("win") else ""))
+    return str(exe) if exe.exists() else None
+
+
+def ffmpeg_bin() -> str | None:
+    import os
+    return os.environ.get("RIPPER_FFMPEG") or _bundled("ffmpeg") or shutil.which("ffmpeg")
+
+
+def ffprobe_bin() -> str | None:
+    import os
+    return os.environ.get("RIPPER_FFPROBE") or _bundled("ffprobe") or shutil.which("ffprobe")
+
+
+def check_ffmpeg() -> bool:
+    return bool(ffmpeg_bin()) and bool(ffprobe_bin())
+
+
+def _run(cmd: list[str], timeout: float = 600) -> subprocess.CompletedProcess:
+    return subprocess.run(cmd, capture_output=True, timeout=timeout, creationflags=_NO_WINDOW)
+
+
+def probe(path: Path) -> dict | None:
+    """Return {duration, codec, channels, sample_rate} for the first audio stream, or None."""
+    probe_bin = ffprobe_bin()
+    if not probe_bin:
+        raise JobError("ffprobe not available")
+    try:
+        res = _run([probe_bin, "-v", "error", "-print_format", "json", "-show_streams",
+                    "-show_format", str(path)], timeout=60)
+    except subprocess.TimeoutExpired:
+        return None
+    if res.returncode != 0:
+        return None
+    try:
+        info = json.loads(res.stdout or b"{}")
+    except json.JSONDecodeError:
+        return None
+    audio = [s for s in info.get("streams", []) if s.get("codec_type") == "audio"]
+    if not audio:
+        return None
+    s = audio[0]
+    duration = s.get("duration") or info.get("format", {}).get("duration")
+    try:
+        duration = float(duration)
+    except (TypeError, ValueError):
+        duration = None
+    return {
+        "duration": duration,
+        "codec": s.get("codec_name"),
+        "channels": s.get("channels"),
+        "sample_rate": int(s.get("sample_rate") or 0),
+        "format": info.get("format", {}).get("format_name"),
+    }
+
+
+def convert_to_wav(src: Path, dst: Path, sr: int = 44100) -> None:
+    """Decode anything ffmpeg understands to 44.1 kHz stereo 32-bit float WAV."""
+    exe = ffmpeg_bin()
+    if not exe:
+        raise JobError("ffmpeg not available")
+    tmp = dst.with_suffix(".tmp.wav")
+    res = _run([exe, "-y", "-v", "error", "-i", str(src), "-vn", "-ac", "2", "-ar", str(sr),
+                "-c:a", "pcm_f32le", str(tmp)])
+    if res.returncode != 0 or not tmp.exists():
+        tmp.unlink(missing_ok=True)
+        raise JobError("Could not decode audio (ffmpeg failed)")
+    tmp.replace(dst)
+
+
+def read_stereo(path: Path) -> tuple[np.ndarray, int]:
+    """Read a WAV as float32 array shaped (channels=2, samples)."""
+    data, sr = sf.read(str(path), dtype="float32", always_2d=True)
+    data = data.T
+    if data.shape[0] == 1:
+        data = np.vstack([data, data])
+    return np.ascontiguousarray(data[:2]), sr
