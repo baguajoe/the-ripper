@@ -22,9 +22,15 @@ ENGINE_CMD="${RIPPER_ENGINE_CMD:-$PY -m engine}"
 echo "==> starting engine: $ENGINE_CMD"
 $ENGINE_CMD --port 0 --new > "$WORK/engine.out" 2> "$WORK/engine.err" &
 ENGINE_PID=$!
-for _ in $(seq 1 100); do grep -q RIPPER_ENGINE_READY "$WORK/engine.out" 2>/dev/null && break; sleep 0.2; done
+# A cold first start (Python + librosa/numba imports) can take a while on CI runners.
+START=$SECONDS
+until grep -q RIPPER_ENGINE_READY "$WORK/engine.out" 2>/dev/null; do
+  if ! kill -0 "$ENGINE_PID" 2>/dev/null; then echo "engine exited during start-up:"; cat "$WORK/engine.out" "$WORK/engine.err"; exit 1; fi
+  if (( SECONDS - START > 120 )); then echo "engine not ready after 120 s:"; cat "$WORK/engine.out" "$WORK/engine.err"; exit 1; fi
+  sleep 0.5
+done
+echo "   ready after $(( SECONDS - START )) s"
 READY="$(grep RIPPER_ENGINE_READY "$WORK/engine.out" | sed 's/^RIPPER_ENGINE_READY //')"
-[ -n "$READY" ] || { echo "engine failed to start"; cat "$WORK/engine.err"; exit 1; }
 PORT="$(echo "$READY" | json 'd["port"]')"
 TOKEN="$(echo "$READY" | json 'd["token"]')"
 BASE="http://127.0.0.1:$PORT/api/v1"

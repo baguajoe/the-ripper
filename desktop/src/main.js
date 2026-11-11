@@ -32,6 +32,7 @@ const engine = new EngineManager({
 })
 let win = null
 let quitting = false
+let engineReady = null // Promise<info>; the window opens immediately and the UI waits on this
 
 // --- settings (tiny JSON store in userData) -------------------------------------------------
 const settingsFile = () => path.join(app.getPath('userData'), 'settings.json')
@@ -65,6 +66,7 @@ function validSpec(spec) {
 
 /** Ask the engine to render a DragSpec into dir. Returns absolute file paths. */
 async function renderSpec(spec, dir, extra = {}) {
+  await engineReady
   fs.mkdirSync(dir, { recursive: true })
   const res = await engine.request('POST', `/tracks/${spec.trackId}/render`, {
     kind: spec.kind,
@@ -129,7 +131,10 @@ function handle(channel, fn) {
 }
 
 function registerIpc() {
-  handle('engine:get', () => ({ baseUrl: engine.baseUrl, token: engine.info.token, version: engine.info.version }))
+  handle('engine:get', async () => {
+    await engineReady
+    return { baseUrl: engine.baseUrl, token: engine.info.token, version: engine.info.version }
+  })
 
   handle('drag:prepare', async (_e, spec) => ({ files: await prepareDrag(spec) }))
 
@@ -185,6 +190,7 @@ function registerIpc() {
     if (!req || typeof req.path !== 'string' || !req.path.startsWith('/tracks/') || typeof req.filename !== 'string') {
       throw new Error('Invalid download')
     }
+    await engineReady
     const dir = process.env.RIPPER_DOWNLOAD_DIR || loadSettings().downloadFolder || app.getPath('downloads')
     fs.mkdirSync(dir, { recursive: true })
     const res = await engine.request('POST', req.path, req.body || {})
@@ -262,9 +268,14 @@ async function boot() {
   fs.mkdirSync(DRAG_ROOT, { recursive: true })
   serveUi()
   registerIpc()
+  // Open the window right away (the UI shows the engine as offline until it's up); a cold
+  // first start of Python + librosa can take a while.
+  engineReady = engine.start()
+  createWindow()
   try {
-    await engine.start()
+    await engineReady
   } catch (err) {
+    console.error(`[engine] failed to start: ${err.code || ''} ${err.message}`)
     const ffmpeg = err.code === 'ffmpeg_missing'
     dialog.showErrorBox(
       ffmpeg ? 'ffmpeg is required' : 'The Ripper could not start its audio engine',
@@ -273,9 +284,7 @@ async function boot() {
         : err.message,
     )
     app.exit(1)
-    return
   }
-  createWindow()
 }
 
 app.whenReady().then(boot)
@@ -284,7 +293,7 @@ app.on('second-instance', () => {
   if (win) { if (win.isMinimized()) win.restore(); win.focus() }
 })
 app.on('window-all-closed', () => app.quit())
-app.on('activate', () => { if (!win && engine.info) createWindow() })
+app.on('activate', () => { if (!win && engineReady) createWindow() })
 app.on('before-quit', (e) => {
   if (quitting) return
   quitting = true

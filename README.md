@@ -112,7 +112,7 @@ bash scripts/smoke.sh   # engine-only smoke: health → upload → poll → kit 
 Each installer must be built on its own OS (PyInstaller does not cross-compile).
 
 ```bash
-npm run dist:mac      # macOS → desktop/release/The Ripper-1.0.0-arm64.dmg (+ x64)
+npm run dist:mac      # macOS → desktop/release/The Ripper-1.0.0-<arch>.dmg (arch of the build Mac)
 npm run dist:win      # Windows → desktop/release/The Ripper Setup 1.0.0.exe (NSIS)
 npm run dist:linux    # Linux → AppImage (dev convenience)
 ```
@@ -132,6 +132,12 @@ Each runs: `vite build` → `python scripts/build_engine.py` (PyInstaller onedir
 * **Signing:** set the usual electron-builder variables (`CSC_LINK`, `CSC_KEY_PASSWORD`,
   `APPLE_ID`, `APPLE_APP_SPECIFIC_PASSWORD`, `APPLE_TEAM_ID`) to sign/notarize. Unsigned builds
   work locally (macOS: right-click → Open the first time).
+
+### CI
+
+`.github/workflows/ci.yml` runs lint, build, pytest, vitest, the Electron e2e and the smoke test on
+Ubuntu, Windows and macOS (Demucs on Ubuntu only), then builds the Windows `.exe` and macOS `.dmg`
+installers (unsigned) and attaches them to the run as downloadable artifacts.
 
 ## 6. Using it
 
