@@ -1,0 +1,23 @@
+{
+  "name": "@ripper/desktop",
+  "private": true,
+  "version": "1.0.0",
+  "description": "The Ripper desktop app",
+  "main": "src/main.js",
+  "author": "The Ripper",
+  "scripts": {
+    "dev": "node scripts/dev.mjs",
+    "start": "electron .",
+    "lint": "node --check src/main.js && node --check src/preload.js && node --check src/engine.js",
+    "e2e": "playwright test",
+    "dist:mac": "electron-builder --mac --config electron-builder.yml",
+    "dist:win": "electron-builder --win --config electron-builder.yml",
+    "dist:linux": "electron-builder --linux --config electron-builder.yml"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.65.0",
+    "electron": "45.3.0",
+    "electron-builder": "^26.18.0",
+    "jszip": "^3.10.2"
+  }
+}
