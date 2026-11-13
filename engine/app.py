@@ -171,6 +171,11 @@ def _pid_alive(pid: int) -> bool:
     return True
 
 
+def stage(text: str) -> None:
+    """Start-up progress for the desktop app's splash screen."""
+    print(f"RIPPER_ENGINE_STAGE {text}", flush=True)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="ripper-engine")
     parser.add_argument("--port", type=int, default=0, help="0 = pick a free port")
@@ -183,6 +188,11 @@ def main(argv: list[str] | None = None) -> int:
     logging.basicConfig(level=logging.INFO, format="[engine] %(levelname)s %(message)s",
                         stream=sys.stderr)
 
+    stage("Checking audio tools")
+    from .services import tools
+    for name in ("ffmpeg", "ffprobe"):
+        t = tools.find(name)
+        log.info("%s: %s", name, f"{t.path} ({t.source})" if t else "NOT FOUND")
     if not media.check_ffmpeg():
         print(media.FFMPEG_INSTALL_HINT, file=sys.stderr, flush=True)
         print("RIPPER_ENGINE_ERROR " + json.dumps({"error": "ffmpeg_missing",
@@ -196,8 +206,17 @@ def main(argv: list[str] | None = None) -> int:
             print("RIPPER_ENGINE_READY " + json.dumps({**existing, "reused": True}), flush=True)
             return 0
 
+    def log_js_runtime():
+        js = tools.js_runtime()
+        log.info("js runtime (link import): %s",
+                 f"{js.name} {js.version} at {js.path} ({js.source})" if js else
+                 "NOT FOUND - link import will only work for sites that don't need one")
+    threading.Thread(target=log_js_runtime, daemon=True, name="ripper-jsprobe").start()
+
+    stage("Loading the audio engine")
     token = os.environ.get("RIPPER_TOKEN") or secrets.token_urlsafe(24)
     app = create_app(token=token)
+    stage("Starting the server")
 
     from werkzeug.serving import make_server
     server = make_server("127.0.0.1", args.port, app, threaded=True)

@@ -9,7 +9,7 @@ import os
 import sys
 from pathlib import Path
 
-ENGINE_VERSION = "1.0.0"
+ENGINE_VERSION = "1.1.0"
 API_VERSION = "v1"
 API_PREFIX = f"/api/{API_VERSION}"
 

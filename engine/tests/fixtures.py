@@ -8,13 +8,14 @@ Produces:
 """
 from __future__ import annotations
 
-import shutil
 import subprocess
 import sys
 from pathlib import Path
 
 import numpy as np
 import soundfile as sf
+
+from engine.services import media
 
 SR = 44100
 DURATION = 12.0
@@ -62,8 +63,9 @@ def generate(out_dir: Path = DEFAULT_DIR) -> dict[str, Path]:
             sf.write(str(p), make_beat(bpm).T, SR, subtype="PCM_16")
         paths[f"wav{bpm}"] = p
     mp3 = out_dir / "beat_120.mp3"
-    if not mp3.exists() and shutil.which("ffmpeg"):
-        subprocess.run(["ffmpeg", "-y", "-v", "error", "-i", str(paths["wav120"]),
+    ffmpeg = media.ffmpeg_bin()
+    if not mp3.exists() and ffmpeg:
+        subprocess.run([ffmpeg, "-y", "-v", "error", "-i", str(paths["wav120"]),
                         "-codec:a", "libmp3lame", "-b:a", "192k", str(mp3)], check=True)
     paths["mp3"] = mp3
     bad = out_dir / "not_audio.wav"

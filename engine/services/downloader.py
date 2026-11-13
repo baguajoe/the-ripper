@@ -7,7 +7,16 @@ from typing import Callable
 from urllib.parse import urlparse
 
 from ..jobs import JobError
-from . import media
+from . import media, tools
+
+NO_JS_RUNTIME_HINT = (
+    "This site needs a JavaScript runtime (Deno) to import links, and none was found. "
+    "The Ripper normally ships one - reinstalling should fix it. You can still drop "
+    "WAV/MP3 files in, or install Deno (deno.com) and restart."
+)
+# yt-dlp messages that mean "a JS runtime would have helped".
+_JS_ERRORS = ("javascript runtime", "js runtime", "jsc", "n challenge", "signature",
+              "player response", "deno", "ejs")
 
 URL_RE = re.compile(r"^https?://", re.I)
 
@@ -52,18 +61,22 @@ def download(url: str, out_dir: Path, progress: Callable[[float, str], None]) ->
         "progress_hooks": [hook],
         "max_filesize": 1024 * 1024 * 1024,
         "socket_timeout": 30,
-        # YouTube needs a JS runtime for signature solving; use whichever is installed.
-        "js_runtimes": {"deno": {}, "node": {}, "bun": {}},
         "retries": 2,
     }
-    ffmpeg = media.ffmpeg_bin()
-    if ffmpeg:
-        opts["ffmpeg_location"] = str(Path(ffmpeg).parent)
+    # YouTube (and a few others) need a JS runtime for signature solving: the bundled Deno,
+    # else a system Deno/Node. Without one, sites that don't need JS still work.
+    js = tools.js_runtime()
+    opts["js_runtimes"] = js.ytdlp_option() if js else {}
+    location = media.ffmpeg_location()
+    if location:
+        opts["ffmpeg_location"] = location
     try:
         with yt_dlp.YoutubeDL(opts) as ydl:
             info = ydl.extract_info(url, download=True)
     except Exception as exc:  # yt-dlp raises many types; give the user its message
         msg = str(exc).replace("ERROR: ", "").strip().splitlines()[0][:300] if str(exc) else "Download failed"
+        if js is None and any(s in str(exc).lower() for s in _JS_ERRORS):
+            raise JobError(f"Download failed: {NO_JS_RUNTIME_HINT}") from exc
         raise JobError(f"Download failed: {msg}") from exc
     if info is None:
         raise JobError("Download failed: no media found")

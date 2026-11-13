@@ -97,6 +97,9 @@ jobs:
       - name: UI unit tests (vitest)
         run: npm run test:ui
 
+      - name: Desktop unit tests (tool resolver, logs)
+        run: npm run test:desktop
+
       - name: End-to-end tests (Electron + Playwright, Linux with real X11 drags)
         if: runner.os == 'Linux'
         run: xvfb-run -a npm run e2e -w desktop
@@ -120,7 +123,7 @@ jobs:
     name: Installer (${{ matrix.os }})
     needs: test
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 45
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
@@ -160,8 +163,23 @@ jobs:
       - name: Install Node dependencies
         run: npm ci
 
+      # ffmpeg + ffprobe + Deno into desktop/vendor/<os>/ (checksummed; see LICENSES.md)
+      - name: Download bundled ffmpeg + Deno
+        run: '"$RIPPER_PYTHON" scripts/fetch_vendor.py --check'
+
       - name: Build installer (UI + PyInstaller engine + electron-builder)
         run: npm run ${{ matrix.script }}
+
+      - name: Installer size
+        run: |
+          {
+            echo "### Installer (${{ runner.os }})"
+            echo
+            for f in ${{ matrix.files }}; do
+              echo "- \`$(basename "$f")\`: **$(( $(wc -c < "$f") / 1048576 )) MB**"
+            done
+            echo "- bundled tools (uncompressed): $(du -shc desktop/vendor/ffmpeg/*/ff* desktop/vendor/deno/*/deno* | tail -1 | cut -f1)"
+          } | tee -a "$GITHUB_STEP_SUMMARY"
 
       - name: Upload installer
         uses: actions/upload-artifact@v4
@@ -169,4 +187,82 @@ jobs:
           name: ${{ matrix.artifact }}
           path: ${{ matrix.files }}
           if-no-files-found: error
-          retention-days: 14
+          retention-days: 30
+
+      # --- Prove a clean machine works: install the real installer, then run the INSTALLED
+      # app with ffmpeg, ffprobe, node and deno all absent from PATH.
+      - name: Install (Windows, silent)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $inst = Get-ChildItem desktop/release/*.exe | Select-Object -First 1
+          Start-Process -FilePath $inst.FullName -ArgumentList '/S', '/D=C:\RipperInstalled' -Wait
+          $exe = Get-ChildItem C:\RipperInstalled\*.exe | Where-Object { $_.Name -notlike 'Uninstall*' } | Select-Object -First 1
+          if (-not $exe) { Get-ChildItem -Recurse C:\RipperInstalled | Select-Object -First 40; throw 'installed app not found' }
+          "RIPPER_INSTALLED_APP=$($exe.FullName)" >> $env:GITHUB_ENV
+          "RIPPER_INSTALLED_ENGINE=C:\RipperInstalled\resources\engine\ripper-engine.exe" >> $env:GITHUB_ENV
+          Get-ChildItem C:\RipperInstalled\resources\engine -File | Format-Table Name, Length
+
+      - name: Install (macOS, mount + copy to /Applications)
+        if: runner.os == 'macOS'
+        run: |
+          dmg="$(ls desktop/release/*.dmg | head -1)"
+          hdiutil attach "$dmg" -nobrowse -readonly -mountpoint /Volumes/ripper-install
+          src="$(ls -d /Volumes/ripper-install/*.app | head -1)"
+          echo "dmg contains: $(ls /Volumes/ripper-install)"
+          cp -R "$src" /Applications/
+          hdiutil detach /Volumes/ripper-install
+          app="/Applications/$(basename "$src")"
+          test -d "$app"
+          echo "RIPPER_INSTALLED_APP=$(ls "$app"/Contents/MacOS/* | head -1)" >> "$GITHUB_ENV"
+          echo "RIPPER_INSTALLED_ENGINE=$app/Contents/Resources/engine/ripper-engine" >> "$GITHUB_ENV"
+          ls -l "$app/Contents/Resources/engine/" | grep -v "^d" | head -20
+          # Simulate a download: files copied out of a downloaded dmg carry quarantine. The
+          # app must clear it on its bundled helpers before running them.
+          for b in ffmpeg ffprobe deno; do
+            xattr -w com.apple.quarantine "0081;$(printf %x "$(date +%s)");Safari;" "$app/Contents/Resources/engine/$b"
+          done
+
+      - name: Strip ffmpeg, ffprobe, node and deno from PATH
+        run: |
+          echo "NODE_BIN=$(command -v node)" >> "$GITHUB_ENV"
+          if [ "$RUNNER_OS" = Windows ]; then
+            clean="/usr/bin:/mingw64/bin:/c/Windows/system32:/c/Windows:/c/Windows/System32/Wbem:/c/Windows/System32/WindowsPowerShell/v1.0"
+          else
+            clean="/usr/bin:/bin:/usr/sbin:/sbin"
+          fi
+          for t in ffmpeg ffprobe node deno; do
+            if PATH="$clean" command -v "$t" >/dev/null; then echo "::error::$t is still on the clean PATH: $(PATH="$clean" command -v "$t")"; exit 1; fi
+          done
+          echo "CLEAN_PATH=$clean" >> "$GITHUB_ENV"
+          echo "clean PATH: $clean (no ffmpeg, ffprobe, node or deno)"
+          # Fixtures are made now (with the vendored ffmpeg), not by the tests on the clean PATH.
+          "$RIPPER_PYTHON" -m engine.tests.fixtures
+          ls -l engine/tests/fixtures/generated/
+
+      - name: "Clean machine: installed app end-to-end (Electron + Playwright)"
+        working-directory: desktop
+        run: |
+          PATH="$CLEAN_PATH" RIPPER_E2E_EXECUTABLE="$RIPPER_INSTALLED_APP" RIPPER_E2E_EXPECT_BUNDLED=1 \
+            "$NODE_BIN" ../node_modules/@playwright/test/cli.js test
+
+      - name: "Clean machine: macOS quarantine was cleared on the bundled helpers"
+        if: runner.os == 'macOS'
+        run: |
+          dir="$(dirname "$RIPPER_INSTALLED_ENGINE")"
+          for b in ffmpeg ffprobe deno ripper-engine; do
+            test -x "$dir/$b" || { echo "::error::$b is not executable"; exit 1; }
+            if xattr -p com.apple.quarantine "$dir/$b" 2>/dev/null; then echo "::error::$b is still quarantined"; exit 1; fi
+            codesign --verify "$dir/$b" && echo "$b: executable, not quarantined, signature ok"
+          done
+
+      - name: "Clean machine: installed engine smoke test (MP3 import → analyze → export kit)"
+        run: PATH="$CLEAN_PATH" RIPPER_ENGINE_CMD="$RIPPER_INSTALLED_ENGINE" SMOKE_EXPECT_BUNDLED=1 bash scripts/smoke.sh
+
+      - name: Upload Playwright results
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-installed-${{ matrix.os }}
+          path: desktop/test-results/
+          if-no-files-found: ignore

@@ -11,6 +11,9 @@ engine/tests/fixtures/generated/
 ui/dist/
 desktop/dist/
 desktop/release/
+# downloaded by scripts/fetch_vendor.py
+desktop/vendor/*/*/*
+!desktop/vendor/*/*/.gitkeep
 test-results/
 playwright-report/
 .DS_Store

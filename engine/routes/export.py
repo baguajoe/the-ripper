@@ -7,7 +7,7 @@ from flask import Blueprint, Response, current_app, jsonify
 
 from .. import config
 from ..app import ApiError
-from ..services import exporter, media, pipeline, separator_ai
+from ..services import exporter, media, pipeline, separator_ai, tools
 from ..services.exporter import ExportOptions, Slice
 from .common import body, require_feature, require_track, state
 
@@ -24,6 +24,7 @@ def health():
         version=config.ENGINE_VERSION,
         api=config.API_VERSION,
         ffmpeg=media.check_ffmpeg(),
+        tools=_tools_status(),
         demucs_available=ai["available"],
         demucs_reason=ai["reason"],
         device=ai["device"],
@@ -32,6 +33,14 @@ def health():
         models={k: v["label"] for k, v in config.DEMUCS_MODELS.items()},
         max_upload_mb=config.MAX_UPLOAD_BYTES // (1024 * 1024),
     )
+
+
+def _tools_status() -> dict:
+    """Where each tool came from (no paths: /health is unauthenticated)."""
+    out = {n: (t.source if (t := tools.find(n)) else None) for n in ("ffmpeg", "ffprobe")}
+    js = tools.js_runtime()
+    out["js_runtime"] = {"name": js.name, "source": js.source, "version": js.version} if js else None
+    return out
 
 
 @bp.post("/shutdown")

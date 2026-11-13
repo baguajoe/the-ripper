@@ -4,7 +4,7 @@
  *
  * Interface (every implementation must provide all of these):
  *   name: 'electron' | 'juce' | 'browser'
- *   capabilities: { nativeDrag: boolean, folders: boolean }
+ *   capabilities: { nativeDrag: boolean, folders: boolean, diagnostics: boolean }
  *   getEngine(): Promise<{ baseUrl: string, token: string, version: string }>
  *   prepareDrag(spec): Promise<{ files: string[] }>   pre-render so dragstart is instant
  *   startDrag(spec): void                             call synchronously inside dragstart
@@ -16,6 +16,12 @@
  *   getSetting(key): Promise<any>, setSetting(key, value): Promise<void>
  *   onError(cb): unsubscribe                          async native errors (e.g. a failed drag)
  *   audio: { getContext(): AudioContext }             playback ("native audio" in JUCE)
+ *
+ * Start-up + tester helpers (real in the desktop app; no-ops elsewhere, see capabilities.diagnostics):
+ *   getEngineStatus(): Promise<{ state: 'starting'|'ready'|'failed', stage, startedAt, error }>
+ *   onEngineStatus(cb): unsubscribe, retryEngine(): Promise<void>
+ *   appInfo(): Promise<{ version, platform, arch, logDir }>
+ *   copyDiagnostics(): Promise<string>, openLogFolder(): Promise<void>, onShowAbout(cb)
  *
  * DragSpec: { trackId, kind: 'slice'|'slices'|'stem'|'kit'|'midi', slices: Slice[],
  *             stems: string[], options: { mode, sr, normalize, trim_silence } }

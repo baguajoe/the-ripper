@@ -16,10 +16,22 @@ extraResources:
   # PyInstaller onedir output (scripts/build_engine.py) -> <resources>/engine/ripper-engine[.exe]
   - from: ../engine/dist/ripper-engine
     to: engine
-  # Optional: drop ffmpeg/ffprobe binaries into desktop/vendor/ffmpeg/<platform>/ to bundle them.
+  # Bundled helpers, next to the engine so it finds them first (engine/services/tools.py).
+  # CI fills desktop/vendor/ with `python scripts/fetch_vendor.py`; see LICENSES.md.
   - from: vendor/ffmpeg/${os}
     to: engine
-    filter: ["ffmpeg*", "ffprobe*"]
+    filter: ["ffmpeg", "ffmpeg.exe", "ffprobe", "ffprobe.exe"]
+  - from: vendor/deno/${os}
+    to: engine
+    filter: ["deno", "deno.exe"]
+  - from: vendor/ffmpeg/${os}
+    to: licenses/ffmpeg
+    filter: ["LICENSE.txt", "GPL-3.0.txt", "BUILD-INFO.txt"]
+  - from: vendor/deno/${os}
+    to: licenses/deno
+    filter: ["LICENSE.md", "BUILD-INFO.txt"]
+  - from: ../LICENSES.md
+    to: licenses/LICENSES.md
 asarUnpack:
   - assets/drag.png
 mac:
