@@ -24,7 +24,14 @@ scripts/   smoke.sh, build_engine.py, py.mjs
 |---|---|
 | Python | 3.10 – 3.14 (tested on 3.12 and 3.14) |
 | Node.js | 20.19+ (tested on 24) |
-| ffmpeg + ffprobe | on `PATH` (the engine refuses to start without them and says how to install) |
+| ffmpeg + ffprobe | dev only, on `PATH` (the **installers bundle their own**, plus Deno for link import) |
+
+The installers need nothing else on the user's machine: no terminal, no ffmpeg, no Node. The
+engine looks for each tool as an override env var (`RIPPER_FFMPEG`, `RIPPER_FFPROBE`, `RIPPER_DENO`),
+then the **bundled copy** (next to `ripper-engine`, or `desktop/vendor/<tool>/<os>/` in a checkout),
+then **`PATH`** (`engine/services/tools.py`). The link-import JS runtime falls back from bundled Deno
+to a system Deno, then to Node ≥ 22. Without any of them, link import still works for sites that don't
+need one, and the UI says so.
 
 ### Install ffmpeg
 
@@ -92,6 +99,7 @@ for changes in `desktop/src` or `engine/`.
 ```bash
 npm run test:engine     # pytest: analysis, slicing, DSP + Demucs stems, export, every API route, link import
 npm run test:ui         # vitest: grid math, pad keys, filenames, JS<->Python parity vectors
+npm run test:desktop    # node --test: desktop tool resolver + log rotation
 npm run lint            # eslint (ui) + syntax check (desktop)
 npm run build           # vite production build
 npm run test:e2e        # Playwright drives the real Electron app (Linux: prefix with xvfb-run -a)
@@ -112,8 +120,9 @@ bash scripts/smoke.sh   # engine-only smoke: health → upload → poll → kit 
 Each installer must be built on its own OS (PyInstaller does not cross-compile).
 
 ```bash
-npm run dist:mac      # macOS → desktop/release/The Ripper-1.0.0-<arch>.dmg (arch of the build Mac)
-npm run dist:win      # Windows → desktop/release/The Ripper Setup 1.0.0.exe (NSIS)
+npm run vendor        # download ffmpeg + ffprobe + Deno for this OS into desktop/vendor/ (do this first)
+npm run dist:mac      # macOS → desktop/release/The Ripper-1.1.0-arm64.dmg (arch of the build Mac)
+npm run dist:win      # Windows → desktop/release/The Ripper Setup 1.1.0.exe (NSIS)
 npm run dist:linux    # Linux → AppImage (dev convenience)
 ```
 
@@ -125,10 +134,11 @@ Each runs: `vite build` → `python scripts/build_engine.py` (PyInstaller onedir
   and pyenv with `--enable-shared` are fine; some minimal Docker/static builds are not).
 * **AI stems in installers:** the default engine build excludes torch (~300 MB+ CPU, multi-GB CUDA).
   `python scripts/build_engine.py --with-ai` bundles them.
-* **ffmpeg:** either require users to install it (the app shows instructions on launch), or bundle
-  it: put `ffmpeg`/`ffprobe` (`.exe` on Windows) in `desktop/vendor/ffmpeg/mac|win/` before
-  building; they're copied next to `ripper-engine` and used automatically. Use an LGPL build
-  (e.g. from evermeet.cx / BtbN `ffmpeg-*-lgpl`) if you ship it, and follow its licence.
+* **Bundled tools:** `npm run vendor` (`scripts/fetch_vendor.py`) downloads checksummed builds:
+  ffmpeg + ffprobe (Windows: BtbN LGPL static; macOS arm64: Martin Riedl static, GPLv3) and
+  Deno 2.9.8 (MIT). electron-builder copies them next to `ripper-engine` and their licences to
+  `resources/licenses/`. **See [LICENSES.md](LICENSES.md).** On macOS the app clears quarantine on
+  its own helpers at launch, so a downloaded `.dmg` works.
 * **Signing:** set the usual electron-builder variables (`CSC_LINK`, `CSC_KEY_PASSWORD`,
   `APPLE_ID`, `APPLE_APP_SPECIFIC_PASSWORD`, `APPLE_TEAM_ID`) to sign/notarize. Unsigned builds
   work locally (macOS: right-click → Open the first time).
@@ -137,7 +147,11 @@ Each runs: `vite build` → `python scripts/build_engine.py` (PyInstaller onedir
 
 `.github/workflows/ci.yml` runs lint, build, pytest, vitest, the Electron e2e and the smoke test on
 Ubuntu, Windows and macOS (Demucs on Ubuntu only), then builds the Windows `.exe` and macOS `.dmg`
-installers (unsigned) and attaches them to the run as downloadable artifacts.
+installers (unsigned) with the bundled tools and attaches them to the run as downloadable artifacts.
+It then **installs each installer** (silent NSIS install on Windows, dmg mount + copy to
+`/Applications` on macOS, with quarantine applied to the helpers). With ffmpeg, ffprobe, node and
+deno removed from `PATH`, it runs the Electron e2e against the installed app and a smoke test
+against the installed engine (MP3 import → analyze → export kit). That proves a clean machine works.
 
 ## 6. Using it
 
@@ -174,7 +188,7 @@ All routes except `/health` need `X-Ripper-Token` (see docs/formats.md §10). Er
 
 | Method | Path | |
 |---|---|---|
-| GET | `/health` | `{ok, version, api, ffmpeg, demucs_available, device, pro, features, models}` |
+| GET | `/health` | `{ok, version, api, ffmpeg, tools, demucs_available, device, pro, features, models}` (`tools`: where ffmpeg/ffprobe/JS runtime came from) |
 | POST | `/tracks/link` `{url}` | `202 {job_id, track_id}` |
 | POST | `/tracks/upload` (multipart `file`) | `202 {job_id, track_id}`; 400 bad type/unreadable, 413 too big |
 | GET | `/jobs/<id>` | `{status, progress, message, result, error}` |
@@ -194,7 +208,11 @@ Storage: `engine/storage/` in dev (`<app-data>/TheRipper/storage` when packaged;
 
 ## 9. Troubleshooting
 
-* **“ffmpeg is required”** on launch — install it (§1) and restart the app.
+* **Tester reports** — *Help → Copy Diagnostics* (also on the start-up error screen and in *About*)
+  copies the app version, OS, which ffmpeg/ffprobe/deno/node were found and the log tails. *Help →
+  Open Log Folder* opens `<userData>/logs/` (`main.log`, `engine.log`, rotated, 10 MB max in total).
+* **“ffmpeg is required”** on launch — only when neither the bundled copy nor `PATH` has it. The
+  app's files are incomplete: reinstall. (Running from source: install it, §1.)
 * **YouTube links fail** — keep yt-dlp current (`pip install -U yt-dlp`) and install a JS runtime
   (`deno` or Node) — YouTube needs one. Some networks/datacenter IPs are blocked by YouTube.
 * **Linux: app hangs after a drag** — Electron's X11 drag loop needs the mouse button held; the

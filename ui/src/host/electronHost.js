@@ -4,7 +4,7 @@ import { sharedAudioContext } from './audioContext.js'
 export function electronHost(bridge) {
   return {
     name: 'electron',
-    capabilities: { nativeDrag: true, folders: true },
+    capabilities: { nativeDrag: true, folders: true, diagnostics: true },
     getEngine: () => bridge.getEngine(),
     prepareDrag: (spec) => bridge.prepareDrag(spec),
     startDrag: (spec) => bridge.startDrag(spec),
@@ -15,6 +15,14 @@ export function electronHost(bridge) {
     getSetting: (k) => bridge.getSetting(k),
     setSetting: (k, v) => bridge.setSetting(k, v),
     onError: (cb) => bridge.onError?.(cb) ?? (() => {}),
+    // start-up screen + tester helpers (optional in other hosts)
+    getEngineStatus: () => bridge.getEngineStatus(),
+    onEngineStatus: (cb) => bridge.onEngineStatus(cb),
+    retryEngine: () => bridge.retryEngine(),
+    appInfo: () => bridge.appInfo(),
+    copyDiagnostics: () => bridge.copyDiagnostics(),
+    openLogFolder: () => bridge.openLogFolder(),
+    onShowAbout: (cb) => bridge.onShowAbout(cb),
     audio: { getContext: sharedAudioContext },
   }
 }

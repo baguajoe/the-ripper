@@ -18,7 +18,7 @@ export function juceHost(juce) {
   }
   return {
     name: 'juce',
-    capabilities: { nativeDrag: true, folders: true },
+    capabilities: { nativeDrag: true, folders: true, diagnostics: false },
     getEngine: () => call('getEngine'),
     prepareDrag: (spec) => call('prepareDrag', spec),
     startDrag: (spec) => { call('startDrag', spec).catch(() => {}) },
@@ -29,6 +29,14 @@ export function juceHost(juce) {
     getSetting: (k) => call('getSetting', k),
     setSetting: (k, v) => call('setSetting', k, v),
     onError: () => () => {},
+    // TODO(plugin): start-up status + diagnostics; the plugin shares the desktop engine for now.
+    getEngineStatus: async () => null,
+    onEngineStatus: () => () => {},
+    retryEngine: async () => {},
+    appInfo: () => call('appInfo').catch(() => null),
+    copyDiagnostics: () => call('copyDiagnostics'),
+    openLogFolder: () => call('openLogFolder'),
+    onShowAbout: () => () => {},
     // TODO(plugin): route pad playback to the plugin's audio thread instead of Web Audio.
     audio: { getContext: sharedAudioContext },
   }

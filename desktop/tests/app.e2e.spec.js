@@ -6,6 +6,8 @@ const JSZip = require('jszip')
 const { execFileSync } = require('node:child_process')
 const { ROOT, fixtures, inspectWav, tempDirs, python } = require('./helpers')
 
+const APP_VERSION = require('../package.json').version
+
 // Linux (xvfb): perform a REAL native drag — hold the X pointer with XTest, fire dragstart,
 // let Electron run its XDND loop, release over the desktop. Elsewhere the OS drag loop is
 // skipped (RIPPER_E2E_FAKE_OS_DRAG) and everything up to startDrag is still exercised.
@@ -77,6 +79,9 @@ async function nativeDrag(testId) {
 test('boot → upload → analyze → chop → pads → stems → drag → export kit', async () => {
   const fx = fixtures()
 
+  // --- never a blank window: the start-up screen (or the app, if the engine was quick)
+  await expect(win.getByTestId('startup-screen').or(win.getByTestId('engine-status'))).toBeVisible({ timeout: 30_000 })
+
   // --- app boots and the backend is healthy
   // first start of a cold Python/librosa can be slow on CI runners
   await expect(win.getByTestId('engine-status')).toHaveAttribute('data-ok', 'true', { timeout: 120_000 })
@@ -86,6 +91,26 @@ test('boot → upload → analyze → chop → pads → stems → drag → expor
   })
   expect(health.ok).toBe(true)
   expect(health.ffmpeg).toBe(true)
+  expect(health.tools.ffmpeg).toBeTruthy()
+  if (process.env.RIPPER_E2E_EXPECT_BUNDLED === '1') {
+    // installed app on a machine without ffmpeg/node/deno on PATH: everything comes from the bundle
+    expect(health.tools).toMatchObject({ ffmpeg: 'bundled', ffprobe: 'bundled', js_runtime: { name: 'deno', source: 'bundled' } })
+  }
+  expect(health.version).toBe(APP_VERSION)
+
+  // --- About shows the app version; diagnostics + log files for testers
+  await win.getByTestId('about-open').click()
+  await expect(win.getByTestId('about-version')).toHaveText(APP_VERSION)
+  await expect(win.getByTestId('about-ffmpeg')).toContainText('OK')
+  await win.keyboard.press('Escape')
+  await expect(win.getByTestId('about-dialog')).toHaveCount(0)
+  const diag = await win.evaluate(() => window.ripper.copyDiagnostics())
+  expect(diag).toContain(`App version:   ${APP_VERSION}`)
+  expect(diag).toMatch(/ffmpeg: +\S/)
+  expect(diag).toContain('--- engine log')
+  expect(diag).toContain('RIPPER_ENGINE_STAGE')
+  expect(diag).not.toMatch(/"token"/) // the engine's READY line carries its secret token
+  for (const f of ['main.log', 'engine.log']) expect(fs.existsSync(path.join(dirs.userData, 'logs', f))).toBe(true)
   await expect(win.getByTestId('rights-note')).toContainText('Only import content you own')
 
   // --- upload the fixture WAV

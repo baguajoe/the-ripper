@@ -174,3 +174,28 @@ input[type=range] { accent-color: var(--accent); }
 .toast { background: var(--panel-2); border: 1px solid var(--line); border-left: 4px solid var(--cool); border-radius: 8px; padding: 10px 12px; display: flex; gap: 10px; align-items: center; box-shadow: 0 6px 24px rgba(0,0,0,0.4); user-select: text; }
 .toast-error { border-left-color: var(--bad); }
 .toast-success { border-left-color: var(--ok); }
+
+/* --- start-up screen / engine error ------------------------------------------------------ */
+.startup { height: 100%; display: grid; place-items: center; background: radial-gradient(circle at 50% 30%, #1a1e27 0%, var(--bg) 70%); padding: 24px; }
+.startup-card { width: min(520px, 100%); display: grid; gap: 14px; }
+.startup-brand { font-weight: 800; letter-spacing: 0.14em; font-size: 13px; color: var(--muted); }
+.startup-brand .brand-mark { color: var(--accent); }
+.startup-title { margin: 0; font-size: 22px; font-weight: 700; }
+.startup-text { margin: 0; line-height: 1.5; }
+.startup-muted { color: var(--muted); font-size: 12px; }
+.startup-bar { height: 6px; border-radius: 99px; background: var(--panel-2); overflow: hidden; }
+.startup-bar-fill { height: 100%; background: linear-gradient(90deg, var(--accent), var(--accent-2)); border-radius: 99px; transition: width 0.25s linear; }
+.startup-stage { display: flex; justify-content: space-between; font-size: 13px; }
+.startup-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.startup-details summary { cursor: pointer; color: var(--muted); font-size: 12px; }
+.startup-details pre { white-space: pre-wrap; font: 11px ui-monospace, monospace; background: var(--bg-2); border: 1px solid var(--line); border-radius: 8px; padding: 10px; max-height: 200px; overflow: auto; user-select: text; }
+
+/* --- About dialog ------------------------------------------------------------------------- */
+.btn-ghost { background: transparent; }
+.modal-backdrop { position: fixed; inset: 0; background: rgba(5, 6, 9, 0.6); display: grid; place-items: center; z-index: 50; }
+.modal { width: min(480px, calc(100% - 32px)); background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 16px 18px; display: grid; gap: 14px; }
+.modal-head { display: flex; justify-content: space-between; align-items: center; }
+.about-grid { display: grid; grid-template-columns: auto 1fr; gap: 6px 14px; margin: 0; font-size: 13px; }
+.about-grid dt { color: var(--muted); }
+.about-grid dd { margin: 0; user-select: text; overflow-wrap: anywhere; }
+.linkbar-warn { color: var(--accent-2); }

@@ -2,12 +2,15 @@
 // Spawns/reuses the Flask engine, serves the React build on ripper://app/, and owns every
 // native action (drag-out to DAW, folder dialogs, saving files). The renderer only reaches
 // these through the whitelisted IPC channels exposed by preload.js.
-const { app, BrowserWindow, dialog, ipcMain, nativeImage, net, protocol, shell } = require('electron')
+const { app, BrowserWindow, Menu, clipboard, dialog, ipcMain, nativeImage, net, protocol, shell } = require('electron')
 const crypto = require('node:crypto')
 const fs = require('node:fs')
+const os = require('node:os')
 const path = require('node:path')
 const { pathToFileURL } = require('node:url')
 const { EngineManager } = require('./engine')
+const { createLogs } = require('./logs')
+const tools = require('./tools')
 
 const DEV_URL = process.env.VITE_DEV_SERVER_URL || null
 const REPO_ROOT = path.resolve(__dirname, '..', '..')
@@ -24,15 +27,84 @@ protocol.registerSchemesAsPrivileged([
 if (process.env.RIPPER_USER_DATA) app.setPath('userData', process.env.RIPPER_USER_DATA)
 if (!app.requestSingleInstanceLock()) app.quit()
 
+// --- logs: <userData>/logs/{main,engine}.log, rotated, 10 MB max ----------------------------------
+const logs = createLogs(path.join(app.getPath('userData'), 'logs'))
+const log = {
+  info: (...a) => { console.log(...a); logs.app.write(a.join(' ')) },
+  warn: (...a) => { console.warn(...a); logs.app.write(`WARN ${a.join(' ')}`) },
+  error: (...a) => { console.error(...a); logs.app.write(`ERROR ${a.join(' ')}`) },
+}
+process.on('uncaughtException', (e) => log.error(`uncaught: ${e.stack || e}`))
+process.on('unhandledRejection', (e) => log.error(`unhandled rejection: ${e?.stack || e}`))
+
+// --- engine + start-up status (shown by the renderer's splash / error screen) ----------------------
+const status = { state: 'starting', stage: 'Starting', startedAt: Date.now(), readyAt: null, error: null }
+function setStatus(patch) {
+  Object.assign(status, patch)
+  if (win && !win.isDestroyed()) win.webContents.send('engine:status', { ...status })
+}
+
 const engine = new EngineManager({
   packaged: app.isPackaged,
   resourcesPath: process.resourcesPath,
   repoRoot: REPO_ROOT,
   dev: !!DEV_URL,
+  log,
+  expectedVersion: app.getVersion(),
+  onStage: (stage) => setStatus({ stage }),
+  engineLog: (line) => logs.engine.write(line),
 })
 let win = null
 let quitting = false
 let engineReady = null // Promise<info>; the window opens immediately and the UI waits on this
+
+const toolOpts = () => ({ packaged: app.isPackaged, resourcesPath: process.resourcesPath, repoRoot: REPO_ROOT })
+
+/** Plain-text report a tester can paste to us: versions, OS, tools found, log tails. */
+async function diagnostics() {
+  const found = tools.findAll(toolOpts())
+  const fmt = (t) => (t ? `${t.path}  (${t.source === 'path' ? 'system PATH' : t.source})` : 'NOT FOUND')
+  let health = null
+  if (status.state === 'ready' && engine.baseUrl) {
+    try { health = await (await fetch(`${engine.baseUrl}/api/v1/health`)).json() } catch { /* engine gone */ }
+  }
+  const secs = (ms) => `${(ms / 1000).toFixed(1)} s`
+  return [
+    '=== The Ripper diagnostics ===',
+    `App version:   ${app.getVersion()}${app.isPackaged ? '' : ' (dev)'}`,
+    `OS:            ${os.type()} ${os.release()} (${process.platform} ${process.arch})${os.version ? ` — ${os.version()}` : ''}`,
+    `Electron:      ${process.versions.electron} (Chrome ${process.versions.chrome}, Node ${process.versions.node})`,
+    `Memory:        ${(os.totalmem() / 2 ** 30).toFixed(1)} GB, ${os.cpus().length} CPUs`,
+    `Engine:        ${status.state}${status.state === 'starting' ? ` — ${status.stage} (${secs(Date.now() - status.startedAt)})` : ''}`
+      + `${status.readyAt ? ` — started in ${secs(status.readyAt - status.startedAt)}` : ''}`
+      + `${engine.info ? ` — v${engine.info.version}, port ${engine.info.port}${engine.info.reused ? ', reused' : ''}` : ''}`,
+    ...(status.error ? [`Engine error:  [${status.error.code}] ${status.error.message}`] : []),
+    `ffmpeg:        ${fmt(found.ffmpeg)}`,
+    `ffprobe:       ${fmt(found.ffprobe)}`,
+    `deno:          ${fmt(found.deno)}`,
+    `node:          ${fmt(found.node)}`,
+    ...(health ? [`Engine sees:   ${JSON.stringify(health.tools)} demucs=${health.demucs_available}`] : []),
+    `Log folder:    ${logs.dir}`,
+    `Generated:     ${new Date().toISOString()}`,
+    '',
+    '--- engine log (last 60 lines) ---',
+    ...logs.engine.tail(60),
+    '',
+    '--- app log (last 25 lines) ---',
+    ...logs.app.tail(25),
+  ].join('\n')
+}
+
+async function copyDiagnostics() {
+  const text = await diagnostics()
+  clipboard.writeText(text)
+  return text
+}
+
+function openLogFolder() {
+  fs.mkdirSync(logs.dir, { recursive: true })
+  return shell.openPath(logs.dir)
+}
 
 // --- settings (tiny JSON store in userData) -------------------------------------------------
 const settingsFile = () => path.join(app.getPath('userData'), 'settings.json')
@@ -135,6 +207,11 @@ function registerIpc() {
     await engineReady
     return { baseUrl: engine.baseUrl, token: engine.info.token, version: engine.info.version }
   })
+  handle('engine:status', () => ({ ...status }))
+  handle('engine:retry', () => { if (status.state === 'failed') startEngine() })
+  handle('app:info', () => ({ version: app.getVersion(), platform: process.platform, arch: process.arch, logDir: logs.dir }))
+  handle('diag:copy', () => copyDiagnostics())
+  handle('diag:openLogs', async () => { await openLogFolder() })
 
   handle('drag:prepare', async (_e, spec) => ({ files: await prepareDrag(spec) }))
 
@@ -263,28 +340,66 @@ function createWindow() {
   win.on('closed', () => { win = null })
 }
 
+// --- menu --------------------------------------------------------------------------------------------
+function buildMenu() {
+  const isMac = process.platform === 'darwin'
+  const copyDiag = async () => {
+    await copyDiagnostics()
+    dialog.showMessageBox(win, { type: 'info', message: 'Diagnostics copied', detail: 'Paste them into your message to us. They include the app version, your OS, which helper tools were found and the end of the engine log.' })
+  }
+  const help = [
+    { label: 'Open Log Folder', click: () => openLogFolder() },
+    { label: 'Copy Diagnostics', click: copyDiag },
+    ...(isMac ? [] : [{ type: 'separator' }, { label: 'About The Ripper', click: () => win?.webContents.send('app:showAbout') }]),
+  ]
+  Menu.setApplicationMenu(Menu.buildFromTemplate([
+    ...(isMac ? [{ role: 'appMenu' }] : []),
+    { role: 'fileMenu' },
+    { role: 'editMenu' },
+    { role: 'viewMenu' },
+    { role: 'windowMenu' },
+    { role: 'help', submenu: help },
+  ]))
+  app.setAboutPanelOptions({ applicationName: 'The Ripper', applicationVersion: app.getVersion(), version: '', copyright: 'Copyright © 2026 The Ripper' })
+}
+
+// --- engine start-up ------------------------------------------------------------------------------
+function startEngine() {
+  setStatus({ state: 'starting', stage: 'Starting', startedAt: Date.now(), readyAt: null, error: null })
+  log.info(`[app] The Ripper ${app.getVersion()} on ${process.platform} ${process.arch} (${os.release()}) — starting engine`)
+  for (const t of Object.values(tools.findAll(toolOpts()))) if (t) log.info(`[app] found ${t.name}: ${t.path} (${t.source})`)
+  const prep = app.isPackaged ? tools.prepareBundledTools({ resourcesPath: process.resourcesPath, log }) : Promise.resolve()
+  engineReady = prep.then(() => engine.start())
+  engineReady.then(
+    (info) => {
+      setStatus({ state: 'ready', stage: 'Ready', readyAt: Date.now() })
+      log.info(`[app] engine ready on :${info.port} after ${((status.readyAt - status.startedAt) / 1000).toFixed(1)} s${info.reused ? ' (reused)' : ''}`)
+    },
+    (err) => {
+      log.error(`[engine] failed to start: ${err.code || ''} ${err.message}`)
+      setStatus({ state: 'failed', error: { code: err.code || 'unknown', message: err.message } })
+      // Only when the bundled copy AND PATH both came up empty (the engine checks both).
+      if (err.code === 'ffmpeg_missing') {
+        dialog.showErrorBox('ffmpeg is required',
+          'The Ripper could not find its built-in copy of ffmpeg, and there is none installed on this computer.\n\n'
+          + 'Reinstalling The Ripper should fix this. If it keeps happening, use Help → Copy Diagnostics and send us the result.')
+      }
+    },
+  )
+  engineReady.catch(() => {}) // handled above; IPC callers get the rejection themselves
+}
+
 async function boot() {
   cleanDragRoot()
   fs.mkdirSync(DRAG_ROOT, { recursive: true })
   serveUi()
   registerIpc()
-  // Open the window right away (the UI shows the engine as offline until it's up); a cold
-  // first start of Python + librosa can take a while.
-  engineReady = engine.start()
+  buildMenu()
+  // Open the window right away: the UI shows a "Starting The Ripper…" screen with progress
+  // until the engine is up (a cold first start of Python + librosa can take a while), or a
+  // friendly error with "Copy diagnostics" if it fails.
+  startEngine()
   createWindow()
-  try {
-    await engineReady
-  } catch (err) {
-    console.error(`[engine] failed to start: ${err.code || ''} ${err.message}`)
-    const ffmpeg = err.code === 'ffmpeg_missing'
-    dialog.showErrorBox(
-      ffmpeg ? 'ffmpeg is required' : 'The Ripper could not start its audio engine',
-      ffmpeg
-        ? 'The Ripper needs ffmpeg to import audio.\n\nmacOS:   brew install ffmpeg\nWindows: winget install Gyan.FFmpeg\nLinux:   sudo apt install ffmpeg\n\nInstall it, then start The Ripper again.'
-        : err.message,
-    )
-    app.exit(1)
-  }
 }
 
 app.whenReady().then(boot)

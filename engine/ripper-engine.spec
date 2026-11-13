@@ -7,8 +7,9 @@ from PyInstaller.utils.hooks import collect_data_files, collect_submodules
 WITH_AI = os.environ.get("RIPPER_BUILD_AI") == "1"
 ONEFILE = os.environ.get("RIPPER_BUILD_ONEFILE") == "1"
 
-datas = collect_data_files("librosa") + collect_data_files("yt_dlp")
-hidden = (collect_submodules("librosa") + collect_submodules("engine")
+datas = (collect_data_files("librosa") + collect_data_files("yt_dlp")
+         + collect_data_files("yt_dlp_ejs", includes=["**/*.js"]))
+hidden = (collect_submodules("librosa") + collect_submodules("engine") + collect_submodules("yt_dlp_ejs")
           + ["soundfile", "soxr", "mido.backends", "sklearn.utils._typedefs"])
 excludes = ["tkinter", "matplotlib", "IPython", "pytest", "Xlib", "PyInstaller"]
 if WITH_AI:

@@ -55,9 +55,17 @@ function engineCommand({ packaged, resourcesPath, repoRoot }) {
   return { cmd: py, args: ['-m', 'engine'], cwd: repoRoot }
 }
 
+const START_TIMEOUT_MS = 180_000 // a cold first start on a slow Mac can take a minute or more
+const NOISY = / "GET \/api\/v1\/(jobs|tracks|health)/ // UI polling: keep out of logs
+
 class EngineManager {
-  constructor({ packaged, resourcesPath, repoRoot, dev, log = console }) {
-    Object.assign(this, { packaged, resourcesPath, repoRoot, dev, log })
+  /**
+   * onStage(text): start-up progress for the splash screen.
+   * engineLog(line): every line the engine prints (minus polling noise), for engine.log.
+   * expectedVersion: only reuse an already-running engine of this version.
+   */
+  constructor({ packaged, resourcesPath, repoRoot, dev, log = console, onStage = () => {}, engineLog = () => {}, expectedVersion = null }) {
+    Object.assign(this, { packaged, resourcesPath, repoRoot, dev, log, onStage, engineLog, expectedVersion })
     this.child = null
     this.info = null
     this.spawned = false
@@ -74,7 +82,7 @@ class EngineManager {
       const existing = readEngineJson()
       if (existing?.port && existing.token) {
         const h = await health(existing.port)
-        if (h && h.api === 'v1') {
+        if (h && h.api === 'v1' && (!this.expectedVersion || h.version === this.expectedVersion)) {
           this.info = { ...existing, version: h.version, reused: true }
           this.log.info?.(`[engine] reusing running engine on :${existing.port} (pid ${existing.pid})`)
           return this.info
@@ -85,6 +93,8 @@ class EngineManager {
     const fullArgs = [...args, '--port', '0', '--parent-pid', String(process.pid)]
     if (process.env.RIPPER_ENGINE_NEW === '1') fullArgs.push('--new')
     this.log.info?.(`[engine] spawning ${cmd} ${fullArgs.join(' ')}`)
+    this.engineLog(`--- spawning ${cmd} ${fullArgs.join(' ')}`)
+    this.onStage('Starting the audio engine')
     const env = { ...process.env, PYTHONUNBUFFERED: '1' }
     if (this.dev) env.RIPPER_DEV = '1'
     const child = spawn(cmd, fullArgs, { cwd, env, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] })
@@ -100,25 +110,42 @@ class EngineManager {
       child.on('error', (err) => fail('spawn_failed', `Could not start the audio engine (${err.message}). ${this.dev ? 'Is the Python venv set up? See README.' : ''}`))
       child.on('exit', (code) => {
         this.child = null
+        this.engineLog(`--- engine exited (code ${code})`)
         if (code === 3) fail('ffmpeg_missing', 'ffmpeg was not found on PATH.')
         else fail('engine_exited', `The audio engine exited (code ${code}).\n${this.stderrTail.slice(-8).join('\n')}`)
       })
       readline.createInterface({ input: child.stdout }).on('line', (line) => {
-        if (line.startsWith('RIPPER_ENGINE_READY ')) resolve(JSON.parse(line.slice(20)))
+        if (!line.startsWith('RIPPER_ENGINE_READY ')) this.engineLog(line) // READY carries the token
+        if (line.startsWith('RIPPER_ENGINE_STAGE ')) this.onStage(line.slice(20))
+        else if (line.startsWith('RIPPER_ENGINE_READY ')) resolve(JSON.parse(line.slice(20)))
         else if (line.startsWith('RIPPER_ENGINE_ERROR ')) {
           const e = JSON.parse(line.slice(20))
           fail(e.error, e.detail)
-        } else this.log.info?.(`[engine] ${line}`)
+        } else console.log(`[engine] ${line}`) // console only: engineLog has it
       })
       readline.createInterface({ input: child.stderr }).on('line', (line) => {
         this.stderrTail.push(line)
         if (this.stderrTail.length > 50) this.stderrTail.shift()
-        if (!/ "GET \/api\/v1\/(jobs|tracks|health)/.test(line)) this.log.info?.(line)
+        if (NOISY.test(line)) return
+        this.engineLog(line)
+        console.log(line)
       })
     })
-    const timeout = new Promise((_, reject) => setTimeout(() => reject(Object.assign(new Error('The audio engine did not start within 60 s'), { code: 'timeout' })), 60000))
-    const info = await Promise.race([ready, timeout])
+    let timer
+    const timeout = new Promise((_, reject) => {
+      timer = setTimeout(() => reject(Object.assign(new Error(`The audio engine did not start within ${START_TIMEOUT_MS / 1000} s`), { code: 'timeout' })), START_TIMEOUT_MS)
+    })
+    let info
+    try {
+      info = await Promise.race([ready, timeout])
+    } catch (err) {
+      if (this.child) await this.stop().catch(() => {}) // don't leave a half-started engine behind
+      throw err
+    } finally {
+      clearTimeout(timer)
+    }
     if (info.reused) this.spawned = false // another engine won the race; ours exited
+    this.onStage('Connecting')
     // Wait until it answers health.
     for (let i = 0; i < 100; i++) {
       if (await health(info.port)) {

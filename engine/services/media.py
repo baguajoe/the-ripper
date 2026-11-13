@@ -2,43 +2,47 @@
 from __future__ import annotations
 
 import json
-import shutil
 import subprocess
-import sys
 from pathlib import Path
 
 import numpy as np
 import soundfile as sf
 
 from ..jobs import JobError
+from . import tools
 
 FFMPEG_INSTALL_HINT = (
-    "ffmpeg was not found on PATH. The Ripper needs ffmpeg + ffprobe to import audio.\n"
+    "ffmpeg was not found. The Ripper ships its own copy of ffmpeg + ffprobe; if you see this,\n"
+    "the app's files may be incomplete - reinstalling The Ripper should fix it.\n"
+    "Running from source? Install ffmpeg:\n"
     "  macOS:   brew install ffmpeg\n"
     "  Windows: winget install Gyan.FFmpeg   (or choco install ffmpeg), then restart\n"
     "  Linux:   sudo apt install ffmpeg      (or your distro's package)\n"
     "Or set RIPPER_FFMPEG / RIPPER_FFPROBE to the full path of the binaries."
 )
 
-_NO_WINDOW = 0x08000000 if sys.platform.startswith("win") else 0  # CREATE_NO_WINDOW
-
-
-def _bundled(name: str) -> str | None:
-    """ffmpeg shipped next to the frozen engine executable (see desktop/vendor/ffmpeg)."""
-    if not getattr(sys, "frozen", False):
-        return None
-    exe = Path(sys.executable).parent / (name + (".exe" if sys.platform.startswith("win") else ""))
-    return str(exe) if exe.exists() else None
+_NO_WINDOW = tools._NO_WINDOW
 
 
 def ffmpeg_bin() -> str | None:
-    import os
-    return os.environ.get("RIPPER_FFMPEG") or _bundled("ffmpeg") or shutil.which("ffmpeg")
+    """ffmpeg to run: override → bundled copy → PATH (see services/tools.py)."""
+    t = tools.find("ffmpeg")
+    return t.path if t else None
 
 
 def ffprobe_bin() -> str | None:
-    import os
-    return os.environ.get("RIPPER_FFPROBE") or _bundled("ffprobe") or shutil.which("ffprobe")
+    t = tools.find("ffprobe")
+    return t.path if t else None
+
+
+def ffmpeg_location() -> str | None:
+    """For yt-dlp's --ffmpeg-location: the folder holding both binaries, else ffmpeg itself."""
+    ff, fp = ffmpeg_bin(), ffprobe_bin()
+    if not ff:
+        return None
+    if fp and Path(fp).parent == Path(ff).parent:
+        return str(Path(ff).parent)
+    return ff
 
 
 def check_ffmpeg() -> bool:

@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
-# Smoke test: start the engine, check health, upload the fixture, poll until analyzed,
-# chop by bar, download the export kit zip and list its contents.
+# Smoke test: start the engine, check health, upload the fixture MP3 (WAV if no MP3 could be
+# made), poll until analyzed, chop by bar, download the export kit zip and list its contents.
+#
+#   RIPPER_ENGINE_CMD=<installed engine>  test a frozen / installed engine instead of python -m engine
+#   SMOKE_EXPECT_BUNDLED=1                 fail unless the engine uses its bundled ffmpeg + Deno
+#   SMOKE_FIXTURE=<file>                   import this file instead
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
@@ -15,12 +19,14 @@ json() { "$PY" -c "import json,sys; d=json.load(sys.stdin); print($1)"; }
 
 echo "==> generating fixtures"
 "$PY" -m engine.tests.fixtures >/dev/null
-FIXTURE="$ROOT/engine/tests/fixtures/generated/beat_120.wav"
+GEN="$ROOT/engine/tests/fixtures/generated"
+FIXTURE="${SMOKE_FIXTURE:-$GEN/beat_120.mp3}"
+[ -f "$FIXTURE" ] || FIXTURE="$GEN/beat_120.wav"
 
 # RIPPER_ENGINE_CMD=engine/dist/ripper-engine/ripper-engine bash scripts/smoke.sh  -> test the frozen build
-ENGINE_CMD="${RIPPER_ENGINE_CMD:-$PY -m engine}"
-echo "==> starting engine: $ENGINE_CMD"
-$ENGINE_CMD --port 0 --new > "$WORK/engine.out" 2> "$WORK/engine.err" &
+if [ -n "${RIPPER_ENGINE_CMD:-}" ]; then ENGINE=("$RIPPER_ENGINE_CMD"); else ENGINE=("$PY" -m engine); fi
+echo "==> starting engine: ${ENGINE[*]}"
+"${ENGINE[@]}" --port 0 --new > "$WORK/engine.out" 2> "$WORK/engine.err" &
 ENGINE_PID=$!
 # A cold first start (Python + librosa/numba imports) can take a while on CI runners.
 START=$SECONDS
@@ -38,6 +44,12 @@ H=(-H "X-Ripper-Token: $TOKEN")
 
 echo "==> GET /health"
 curl -fsS "$BASE/health" | tee "$WORK/health.json"; echo
+echo "   tools: $(json 'json.dumps(d.get("tools"))' < "$WORK/health.json")"
+if [ "${SMOKE_EXPECT_BUNDLED:-}" = 1 ]; then
+  json '"ok" if d["tools"]["ffmpeg"] == d["tools"]["ffprobe"] == "bundled" else sys.exit("ffmpeg/ffprobe are not the bundled copies: %s" % d["tools"])' < "$WORK/health.json"
+  json '"ok" if (d["tools"]["js_runtime"] or {}).get("source") == "bundled" and d["tools"]["js_runtime"]["name"] == "deno" else sys.exit("JS runtime is not the bundled Deno: %s" % d["tools"])' < "$WORK/health.json"
+  echo "   bundled ffmpeg, ffprobe and Deno in use"
+fi
 
 echo "==> POST /tracks/upload ($FIXTURE)"
 UP="$(curl -fsS "${H[@]}" -F "file=@$FIXTURE" "$BASE/tracks/upload")"
