@@ -66,14 +66,19 @@ def sha256(data: bytes) -> str:
 
 
 def expect_sha(data: bytes, listing: str, name: str) -> None:
-    """listing: 'sha  name' lines (sha256sum format) or a bare hash."""
+    """listing: sha256sum lines ('<hash>  name'), a bare hash, or PowerShell's
+    Get-FileHash table (Deno's Windows assets). Matches the line naming `name`, else a
+    listing that holds exactly one hash."""
+    hex64 = re.compile(r"\b[0-9a-fA-F]{64}\b")
     want = None
     for line in listing.splitlines():
-        parts = line.split()
-        if len(parts) == 1 and re.fullmatch(r"[0-9a-f]{64}", parts[0]):
-            want = parts[0]
-        elif len(parts) >= 2 and parts[-1].lstrip("*").endswith(name):
-            want = parts[0]
+        m = hex64.search(line)
+        if m and name in line:
+            want = m.group(0).lower()
+    if want is None:
+        hashes = {h.lower() for h in hex64.findall(listing)}
+        if len(hashes) == 1:
+            want = hashes.pop()
     if not want:
         raise SystemExit(f"no checksum for {name} in the publisher's list")
     got = sha256(data)
