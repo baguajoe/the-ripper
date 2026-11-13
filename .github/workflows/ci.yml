@@ -208,9 +208,12 @@ jobs:
         run: |
           dmg="$(ls desktop/release/*.dmg | head -1)"
           hdiutil attach "$dmg" -nobrowse -readonly -mountpoint /Volumes/ripper-install
-          cp -R /Volumes/ripper-install/*.app /Applications/
+          src="$(ls -d /Volumes/ripper-install/*.app | head -1)"
+          echo "dmg contains: $(ls /Volumes/ripper-install)"
+          cp -R "$src" /Applications/
           hdiutil detach /Volumes/ripper-install
-          app="$(ls -d /Applications/The\ Ripper.app)"
+          app="/Applications/$(basename "$src")"
+          test -d "$app"
           echo "RIPPER_INSTALLED_APP=$(ls "$app"/Contents/MacOS/* | head -1)" >> "$GITHUB_ENV"
           echo "RIPPER_INSTALLED_ENGINE=$app/Contents/Resources/engine/ripper-engine" >> "$GITHUB_ENV"
           ls -l "$app/Contents/Resources/engine/" | grep -v "^d" | head -20
