@@ -116,8 +116,22 @@ def _crash_hook(target: str) -> None:
         os.remove(path)
     except OSError:
         return
+    native_crash()
+
+
+def native_crash() -> None:
+    """A genuine native crash (not a Python exception)."""
     import ctypes
-    ctypes.string_at(0)  # genuine access violation / SIGSEGV
+    if os.name == "nt":
+        # ctypes guards its own calls with SEH (an access violation inside one becomes OSError),
+        # so start a native thread at address 0: an unguarded access violation, 0xC0000005,
+        # exactly like a crash inside a numeric library.
+        k32 = ctypes.windll.kernel32
+        k32.CreateThread.restype = ctypes.c_void_p
+        k32.CreateThread(None, 0, ctypes.c_void_p(0), None, 0, None)
+        time.sleep(30)
+        os.abort()  # not reached
+    ctypes.string_at(0)  # SIGSEGV
 
 
 def worker_main(conn, role: str, threads: int | None = None) -> None:
