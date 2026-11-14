@@ -9,8 +9,11 @@ import SliceRow from '../components/SliceRow.jsx'
 import ChopControls from '../components/ChopControls.jsx'
 import BpmControls from '../components/BpmControls.jsx'
 import ExportPanel from '../components/ExportPanel.jsx'
-import { divisionBeats, gridSlices, renumber, shiftDownbeat, snap, splitAt, transientSlices } from '../lib/grid.js'
-import { keyToPad, padToSlice } from '../lib/pads.js'
+import { divisionBeats, MIN_SLICE, selectionSlices, shiftDownbeat, snap, splitAt } from '../lib/grid.js'
+import { BANKS, keyToPad, PADS_PER_BANK } from '../lib/pads.js'
+import { BANK_COUNT, FREE_BANKS, chopBanks, clearBank, describeChop, emptyProgram, nextEmptyBank, placeChop, updateBank, updateSlices, withDefaults } from '../lib/program.js'
+import { canRedo, canUndo, initHistory, push, redo, undo } from '../lib/history.js'
+import { barRange, barsFrom, formatBarPos, selectionBars, snapSelection } from '../lib/selection.js'
 import { SlicePlayer } from '../lib/slicePlayer.js'
 import { DEFAULT_EXPORT, toApiSlice } from '../lib/exportSpec.js'
 import { buildFilename } from '../lib/filenames.js'
@@ -24,12 +27,15 @@ function Playhead({ subscribe, duration }) {
   return <span className="time" data-testid="playhead">{formatTime(t)} / {formatTime(duration)}</span>
 }
 
-// Slices survive navigation (Editor <-> Stems) for the session.
-const sliceCache = new Map()
-let nextId = 1
-const withIds = (list, source) => list.map((s) => ({
-  gain: 0, fadeIn: 0, fadeOut: 0.005, reverse: false, choke: false, ...s, source, id: s.id ?? `s${nextId++}`,
-}))
+// The pad program (with its undo history), current bank, selection and chop settings survive
+// navigation (Editor <-> Stems) for the session.
+const sessionCache = new Map()
+const DEFAULT_CHOP = { mode: 'even', count: 16, division: '1', sensitivity: 0.5, cap: 16, snap: true, snapDivision: '1', replace: false }
+const RECHOP_KEYS = ['mode', 'count', 'division', 'sensitivity', 'cap']
+const DEFAULT_BARS = 4
+let chopSeq = 1
+
+const isTyping = (el) => el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.tagName === 'SELECT' || el.isContentEditable)
 
 /** Remount per track + source so a stem sent from the mixer gets its own editor state. */
 export default function EditorRoute() {
@@ -40,17 +46,21 @@ export default function EditorRoute() {
 }
 
 function Editor({ id, source }) {
-  const { host, notify } = useApp()
+  const { host, health, notify } = useApp()
+  const cacheKey = `${id}:${source}`
+  const cached = sessionCache.get(cacheKey)
 
   const [track, setTrack] = useState(null)
   const [buffer, setBuffer] = useState(null)
   const [blobUrl, setBlobUrl] = useState(null)
   const [loadError, setLoadError] = useState(null)
-  const [slices, setSlicesState] = useState(() => sliceCache.get(`${id}:${source}`) ?? [])
+  const [hist, setHist] = useState(() => cached?.hist ?? initHistory(emptyProgram()))
+  const histRef = useRef(hist)
+  const [bank, setBankState] = useState(cached?.bank ?? 0)
+  const [selection, setSelectionState] = useState(cached?.selection ?? null)
+  const [chop, setChopState] = useState(cached?.chop ?? DEFAULT_CHOP)
   const [selectedId, setSelectedId] = useState(null)
-  const [chop, setChop] = useState({ mode: 'grid', division: '1bar', sensitivity: 0.5, snap: true, snapDivision: '1' })
   const [loop, setLoop] = useState({ active: false, start: 0, end: 0 })
-  const [bank, setBank] = useState(0)
   const [activePads, setActivePads] = useState(() => new Set())
   const [busy, setBusy] = useState(false)
   const [playing, setPlaying] = useState(false)
@@ -65,14 +75,27 @@ function Editor({ id, source }) {
   const [options, setOptionsState] = useState(DEFAULT_EXPORT)
   const wave = useRef(null)
   const player = useRef(null)
+  const onsetCache = useRef(new Map())
+  const chopToken = useRef(0)
+  const anchorBar = useRef(null)
+  const sensTimer = useRef(null)
 
-  const setSlices = useCallback((next) => {
-    setSlicesState((prev) => {
-      const val = typeof next === 'function' ? next(prev) : next
-      sliceCache.set(`${id}:${source}`, val)
-      return val
-    })
-  }, [id, source])
+  useEffect(() => { sessionCache.set(cacheKey, { hist, bank, selection, chop }) }, [cacheKey, hist, bank, selection, chop])
+
+  const program = hist.present
+  const cur = program.banks[bank]
+  const slices = cur.slices
+  const allowedBanks = health?.features?.banks_beyond_b === false ? FREE_BANKS : BANK_COUNT
+
+  // --- history -------------------------------------------------------------------------------
+  const setHistory = useCallback((h) => { histRef.current = h; setHist(h) }, [])
+  /** Apply an edit to the program as one undo step (`coalesce`: merge a burst of the same edit). */
+  const commit = useCallback((fn, coalesce = null) => {
+    const h = histRef.current
+    setHistory(push(h, typeof fn === 'function' ? fn(h.present) : fn, coalesce))
+  }, [setHistory])
+  const doUndo = useCallback(() => setHistory(undo(histRef.current)), [setHistory])
+  const doRedo = useCallback(() => setHistory(redo(histRef.current)), [setHistory])
 
   // remembered export options
   useEffect(() => { host.getSetting('exportOptions').then((o) => o && setOptionsState({ ...DEFAULT_EXPORT, ...o })).catch(() => {}) }, [host])
@@ -110,37 +133,144 @@ function Editor({ id, source }) {
 
   const analysis = track?.analysis
   const duration = buffer?.duration ?? track?.duration ?? 0
+  const bpm = analysis?.bpm
+  const downbeat = analysis?.downbeat ?? 0
 
-  const doChop = useCallback(async (override) => {
-    if (!analysis || !duration) return
-    const c = { ...chop, ...override }
-    let next
-    if (c.mode === 'grid') next = gridSlices(analysis.bpm, analysis.downbeat, duration, divisionBeats(c.division))
-    else if (c.mode === 'transients') {
-      setBusy(true)
-      try {
-        next = transientSlices(await api.onsets(id, c.sensitivity, source), duration)
-      } catch (e) {
-        notify(e.message, 'error')
-        return
-      } finally {
-        setBusy(false)
-      }
-    } else next = [{ start: 0, end: duration, name: 'slice01' }]
-    setSlices(withIds(next, source))
+  const playheadTime = useCallback(() => wave.current?.getCurrentTime() ?? 0, [])
+  const defaultRegion = useCallback(() => (analysis ? barsFrom(playheadTime(), DEFAULT_BARS, analysis.bpm, analysis.downbeat, duration) : null), [analysis, duration, playheadTime])
+
+  const setSelection = useCallback((sel) => { setSelectionState(sel); if (!sel) anchorBar.current = null }, [])
+
+  const setBank = useCallback((b) => {
+    setBankState(b)
     setSelectedId(null)
-    setBank(0)
-  }, [analysis, duration, chop, id, source, notify, setSlices])
+    const region = histRef.current.present.banks[b]?.chop?.region
+    if (region) setSelectionState(region) // the waveform shows what this bank was chopped from
+  }, [])
 
-  // first open: auto-chop by bar so pads are ready immediately
+  // --- chopping ------------------------------------------------------------------------------
+  const onsetsFor = useCallback(async (sensitivity) => {
+    const k = sensitivity.toFixed(2)
+    if (!onsetCache.current.has(k)) onsetCache.current.set(k, await api.onsets(id, sensitivity, source))
+    return onsetCache.current.get(k)
+  }, [id, source])
+
+  const computeSlices = useCallback(async (settings, region, a = analysis) => {
+    const { start, end } = region
+    if (settings.mode === 'even') return selectionSlices('even', start, end, { count: settings.count })
+    if (settings.mode === 'grid') {
+      return selectionSlices('grid', start, end, { bpm: a.bpm, downbeat: a.downbeat, division_beats: divisionBeats(settings.division) })
+    }
+    if (settings.mode === 'transients') {
+      const o = await onsetsFor(settings.sensitivity)
+      return selectionSlices('transients', start, end, { onsets: o.onsets, strengths: o.strengths, cap: settings.cap, bpm: a.bpm, downbeat: a.downbeat })
+    }
+    return [{ start, end }] // manual: one slice to split with S / drag
+  }, [analysis, onsetsFor])
+
+  /**
+   * Chop `region` with `settings`. into: 'new' (next empty bank, unless Replace is ticked),
+   * 'current' (re-chop the current bank's chop in place), or 'base' (first open: no undo step).
+   */
+  const chopInto = useCallback(async ({ settings, region, into, a = analysis, coalesce = null }) => {
+    if (!a || !region) return
+    const token = ++chopToken.current
+    let sl
+    if (settings.mode === 'transients') setBusy(true)
+    try {
+      sl = await computeSlices(settings, region, a)
+    } catch (e) {
+      notify(e.message, 'error')
+      return
+    } finally {
+      if (settings.mode === 'transients') setBusy(false)
+    }
+    if (token !== chopToken.current || !sl.length) return // a newer chop won
+    const prog = histRef.current.present
+    const need = Math.ceil(sl.length / PADS_PER_BANK)
+    let target
+    if (into === 'current' || into === 'base' || settings.replace) {
+      target = chopBanks(prog, bank)[0]
+    } else {
+      // the bank you're on if it's empty, else the next empty one(s)
+      target = prog.banks[bank].slices.length === 0 ? bank : nextEmptyBank(prog, need, allowedBanks)
+      if (target < 0) target = nextEmptyBank(prog, 1, allowedBanks)
+      if (target < 0) {
+        const pro = allowedBanks < BANK_COUNT && nextEmptyBank(prog, 1, BANK_COUNT) >= 0
+        notify(pro ? 'Banks C–H are a Pro feature — chopping into the current bank instead (Ctrl+Z to undo).'
+          : 'All 8 banks are full — chopping into the current bank instead (Ctrl+Z to undo).', 'info')
+        target = chopBanks(prog, bank)[0]
+      }
+    }
+    const r = placeChop(prog, sl, { target, limit: allowedBanks, source, chop: { id: `c${chopSeq++}`, region, settings: { ...settings } } })
+    if (into === 'base') setHistory(initHistory(r.program))
+    else commit(r.program, coalesce)
+    setBankState(r.bank)
+    setSelectedId(null)
+    setSelectionState(region)
+    if (r.dropped > 0) {
+      notify(`${r.dropped} slice(s) didn't fit: ${allowedBanks < BANK_COUNT ? 'banks C–H are a Pro feature' : 'the banks after this one are in use'}.`, 'info')
+    }
+  }, [analysis, bank, allowedBanks, source, computeSlices, commit, setHistory, notify])
+
+  const doChop = useCallback(() => {
+    const region = selection ?? defaultRegion()
+    if (!region) return
+    chopInto({ settings: chop, region, into: 'new' })
+  }, [selection, defaultRegion, chop, chopInto])
+
+  // Changing size / mode re-chops the current bank right away (one undo step).
+  const setChop = useCallback((patch) => {
+    const next = { ...chop, ...patch }
+    setChopState(next)
+    if (!RECHOP_KEYS.some((k) => k in patch) || next.mode === 'manual') return
+    const region = selection ?? cur.chop?.region ?? defaultRegion()
+    const run = () => chopInto({ settings: next, region, into: 'current', coalesce: 'sensitivity' in patch ? `rechop-sens-${bank}` : null })
+    clearTimeout(sensTimer.current)
+    if ('sensitivity' in patch) sensTimer.current = setTimeout(run, 200) // slider drag: settle first
+    else run()
+  }, [chop, selection, cur.chop, defaultRegion, chopInto, bank])
+
+  // first open: chop 4 bars from the start, Even 16, into bank A (pads ready immediately)
   const autoChopped = useRef(false)
   useEffect(() => {
-    if (buffer && analysis && !autoChopped.current && slices.length === 0) {
-      autoChopped.current = true
-      doChop()
-    }
-  }, [buffer, analysis, slices.length, doChop])
+    if (!buffer || !analysis || autoChopped.current) return
+    autoChopped.current = true
+    if (program.banks.some((b) => b.slices.length)) return
+    const region = barsFrom(0, DEFAULT_BARS, analysis.bpm, analysis.downbeat, duration)
+    queueMicrotask(() => chopInto({ settings: chop, region, into: 'base' }))
+  }, [buffer, analysis, program, duration, chop, chopInto])
 
+  // --- selection -----------------------------------------------------------------------------
+  const snapRange = useCallback((sel) => {
+    if (!analysis) return sel
+    if (!chop.snap) {
+      const a = Math.max(0, Math.min(sel.start, sel.end))
+      const b = Math.min(duration, Math.max(sel.start, sel.end))
+      return b - a >= MIN_SLICE ? { start: a, end: b } : null
+    }
+    return snapSelection(sel, analysis.bpm, analysis.downbeat, divisionBeats(chop.snapDivision), duration)
+  }, [analysis, chop.snap, chop.snapDivision, duration])
+
+  const onSelectionChange = useCallback((sel) => setSelection(snapRange(sel)), [snapRange, setSelection])
+
+  const onBarClick = useCallback((bar, shift) => {
+    if (!analysis) return
+    if (shift && anchorBar.current != null) {
+      setSelectionState(barRange(anchorBar.current, bar, analysis.bpm, analysis.downbeat, duration))
+    } else {
+      anchorBar.current = bar
+      setSelectionState(barRange(bar, bar, analysis.bpm, analysis.downbeat, duration))
+    }
+  }, [analysis, duration])
+
+  const selectBars = useCallback((n) => {
+    if (!analysis) return
+    anchorBar.current = null
+    setSelectionState(barsFrom(playheadTime(), n, analysis.bpm, analysis.downbeat, duration))
+  }, [analysis, duration, playheadTime])
+
+  // --- pads ----------------------------------------------------------------------------------
   const snapT = useCallback((t) => (chop.snap && analysis
     ? snap(t, analysis.bpm, analysis.downbeat, divisionBeats(chop.snapDivision), duration) : t), [chop.snap, chop.snapDivision, analysis, duration])
 
@@ -149,52 +279,85 @@ function Editor({ id, source }) {
     setTimeout(() => setActivePads((s) => { const n = new Set(s); n.delete(i); return n }), 120)
   }, [])
 
-  const playSlice = useCallback((s) => { if (s) player.current?.play(s) }, [])
+  const playSlice = useCallback((s, pad = -1) => {
+    if (s) player.current?.play(s, { bank, pad, mono: histRef.current.present.banks[bank].mono })
+  }, [bank])
 
   const triggerPad = useCallback((pad) => {
-    const s = slices[padToSlice(pad, bank)]
+    const s = slices[pad]
     if (!s) return
-    playSlice(s)
+    playSlice(s, pad)
     flashPad(pad)
     setSelectedId(s.id)
-  }, [slices, bank, playSlice, flashPad])
+  }, [slices, playSlice, flashPad])
+
+  const releasePad = useCallback((pad) => player.current?.release(bank, pad), [bank])
+
+  const stopAll = useCallback(() => {
+    player.current?.stopAll()
+    wave.current?.pause()
+  }, [])
+
+  // --- slice + bank edits (all undoable) -----------------------------------------------------
+  const editSlices = useCallback((fn, coalesce) => commit((p) => updateSlices(p, bank, fn), coalesce), [commit, bank])
+
+  const updateSlice = useCallback((sid, patch) => editSlices((list) => list.map((s) => (s.id === sid ? { ...s, ...patch } : s)),
+    `slice:${sid}:${Object.keys(patch).join(',')}`), [editSlices])
+
+  const onRegionChange = useCallback((sid, { start, end }) => {
+    editSlices((list) => list.map((s) => (s.id === sid ? { ...s, start: snapT(start), end: Math.max(snapT(end), snapT(start) + MIN_SLICE) } : s)))
+  }, [snapT, editSlices])
+
+  const onRegionCreate = useCallback(({ start, end }) => {
+    if (slices.length >= PADS_PER_BANK) return notify(`Bank ${BANKS[bank]} is full (16 pads) — pick an empty bank first.`, 'info')
+    const s0 = snapT(start)
+    const e0 = Math.max(snapT(end), s0 + MIN_SLICE)
+    editSlices((list) => [...list, withDefaults({ start: s0, end: e0 }, source)])
+  }, [slices.length, bank, snapT, source, editSlices, notify])
+
+  const splitAtPlayhead = useCallback(() => {
+    const t = snapT(playheadTime())
+    const region = selection ?? defaultRegion()
+    if (slices.length >= PADS_PER_BANK) return notify(`Bank ${BANKS[bank]} is full (16 pads).`, 'info')
+    editSlices((list) => {
+      const base = list.length ? list : (region ? [withDefaults(region, source)] : [])
+      return splitAt(base, t).map((s) => withDefaults(s, source))
+    })
+  }, [snapT, playheadTime, selection, defaultRegion, slices.length, bank, source, editSlices, notify])
+
+  const deleteSlice = useCallback((sid) => editSlices((list) => list.filter((s) => s.id !== sid)), [editSlices])
+  const setMono = useCallback((mono) => commit((p) => updateBank(p, bank, { mono })), [commit, bank])
+  const chokeAll = useCallback((on) => editSlices((list) => list.map((s) => ({ ...s, choke: on }))), [editSlices])
+  const clearCurrent = useCallback(() => commit((p) => clearBank(p, bank)), [commit, bank])
 
   const regrid = useCallback(async (patch) => {
     setBusy(true)
     try {
       const t = await api.patchTrack(id, patch)
       setTrack(t)
-      if (chop.mode === 'grid') {
-        const a = t.analysis
-        setSlices(withIds(gridSlices(a.bpm, a.downbeat, duration, divisionBeats(chop.division)), source))
-      }
+      const c = histRef.current.present.banks[bank].chop
+      if (c && c.settings.mode === 'grid') chopInto({ settings: c.settings, region: c.region, into: 'current', a: t.analysis })
     } catch (e) {
       notify(e.message, 'error')
     } finally {
       setBusy(false)
     }
-  }, [id, chop.mode, chop.division, duration, source, notify, setSlices])
-
-  const splitAtPlayhead = useCallback(() => {
-    const t = snapT(wave.current?.getCurrentTime() ?? 0)
-    setSlices((prev) => {
-      const base = prev.length ? prev : withIds([{ start: 0, end: duration, name: 'slice01' }], source)
-      return withIds(splitAt(base, t), source)
-    })
-  }, [snapT, duration, source, setSlices])
+  }, [id, bank, chopInto, notify])
 
   const toggleLoop = useCallback(() => {
     setLoop((l) => {
       if (l.active) return { ...l, active: false }
       const sel = slices.find((s) => s.id === selectedId)
       if (sel) return { active: true, start: sel.start, end: sel.end }
+      if (selection) return { active: true, start: selection.start, end: selection.end }
       if (l.end > l.start) return { ...l, active: true }
-      const t = wave.current?.getCurrentTime() ?? 0
+      const t = playheadTime()
       const bar = analysis ? (240 / analysis.bpm) : 2
       return { active: true, start: t, end: Math.min(duration, t + bar) }
     })
-  }, [slices, selectedId, analysis, duration])
+  }, [slices, selectedId, selection, analysis, duration, playheadTime])
 
+  // --- keyboard ------------------------------------------------------------------------------
   useKeyboard((e) => {
     const k = e.key.toLowerCase()
     if (e.code === 'Space') {
@@ -203,7 +366,7 @@ function Editor({ id, source }) {
       return
     }
     if (k === 'l') return toggleLoop()
-    if (k === 'escape') return player.current?.stopAll()
+    if (k === 'escape') return stopAll()
     // "S" slices at the playhead in Manual mode; otherwise it's pad 10 (ASDF row).
     if (k === 's' && chop.mode === 'manual') return splitAtPlayhead()
     const pad = keyToPad(e.code) >= 0 ? keyToPad(e.code) : keyToPad(k)
@@ -213,24 +376,24 @@ function Editor({ id, source }) {
     }
   })
 
-  const updateSlice = useCallback((sid, patch) => setSlices((prev) => prev.map((s) => (s.id === sid ? { ...s, ...patch } : s))), [setSlices])
-
-  const onRegionChange = useCallback((sid, { start, end }) => {
-    setSlices((prev) => renumber(prev.map((s) => (s.id === sid ? { ...s, start: snapT(start), end: Math.max(snapT(end), snapT(start) + 0.01) } : s))))
-  }, [snapT, setSlices])
-
-  const onRegionCreate = useCallback(({ start, end }) => {
-    const s0 = snapT(start)
-    const e0 = Math.max(snapT(end), s0 + 0.02)
-    setSlices((prev) => withIds(renumber([...prev, { start: s0, end: e0 }]), source))
-  }, [snapT, source, setSlices])
-
-  const onSelect = useCallback((sid, { play } = {}) => {
-    setSelectedId(sid)
-    if (play) playSlice(slices.find((s) => s.id === sid))
-  }, [slices, playSlice])
-
-  const deleteSlice = useCallback((sid) => setSlices((prev) => renumber(prev.filter((s) => s.id !== sid))), [setSlices])
+  // key up (note-on pads) + Ctrl/Cmd+Z / Ctrl/Cmd+Shift+Z / Ctrl+Y
+  const keyRefs = useRef({})
+  useEffect(() => { keyRefs.current = { releasePad, doUndo, doRedo } })
+  useEffect(() => {
+    const up = (e) => {
+      const pad = keyToPad(e.code) >= 0 ? keyToPad(e.code) : keyToPad(e.key)
+      if (pad >= 0) keyRefs.current.releasePad(pad)
+    }
+    const down = (e) => {
+      if (!(e.ctrlKey || e.metaKey) || e.altKey || isTyping(e.target)) return
+      const k = e.key.toLowerCase()
+      if (k === 'z' && !e.shiftKey) { e.preventDefault(); keyRefs.current.doUndo() }
+      else if ((k === 'z' && e.shiftKey) || k === 'y') { e.preventDefault(); keyRefs.current.doRedo() }
+    }
+    window.addEventListener('keyup', up)
+    window.addEventListener('keydown', down)
+    return () => { window.removeEventListener('keyup', up); window.removeEventListener('keydown', down) }
+  }, [])
 
   const downloadSlice = useCallback(async (s) => {
     try {
@@ -250,6 +413,10 @@ function Editor({ id, source }) {
   if (loadError) return <div className="banner banner-error" data-testid="editor-error">Could not open track: {loadError} <Link to="/">Back</Link></div>
   if (!track || !analysis) return <div className="muted pad-24">Loading…</div>
 
+  const nextBank = chop.replace ? chopBanks(program, bank)[0] : slices.length === 0 ? bank : nextEmptyBank(program, 1, allowedBanks)
+  const targetLabel = `Bank ${BANKS[nextBank >= 0 ? nextBank : bank]}`
+  const bars = selectionBars(selection, bpm)
+
   return (
     <div className="editor" data-testid="editor">
       <div className="editor-head">
@@ -267,8 +434,10 @@ function Editor({ id, source }) {
 
       {!buffer ? <div className="waveform-loading">Decoding audio…</div> : (
         <Waveform ref={wave} audioBuffer={buffer} url={blobUrl} bpm={analysis.bpm} downbeat={analysis.downbeat}
-          slices={slices} selectedId={selectedId} loop={loop} dragSelect={chop.mode === 'manual'}
-          onSliceChange={onRegionChange} onSelect={onSelect} onCreate={onRegionCreate}
+          slices={slices} selectedId={selectedId} loop={loop} selection={selection}
+          dragMode={chop.mode === 'manual' ? 'slice' : 'select'}
+          onSliceChange={onRegionChange} onSelect={(sid, { play } = {}) => { setSelectedId(sid); if (play) { const i = slices.findIndex((s) => s.id === sid); playSlice(slices[i], i) } }}
+          onCreate={onRegionCreate} onSelectionChange={onSelectionChange} onBarClick={onBarClick}
           onLoopChange={(r) => setLoop((l) => ({ ...l, start: snapT(r.start), end: snapT(r.end) }))}
           onTime={onTime} onPlayState={setPlaying} zoom={zoom} follow={follow} />
       )}
@@ -289,22 +458,46 @@ function Editor({ id, source }) {
         <span className="muted small slice-count" data-testid="slice-count">{slices.length} slices</span>
       </div>
 
-      <ChopControls chop={chop} setChop={setChop} onChop={() => doChop()} busy={busy} />
+      <div className="selection-bar" data-testid="selection-bar">
+        <span className="sel-label">Selection</span>
+        <span className="sel-info" data-testid="selection-info" data-start={selection?.start ?? ''} data-end={selection?.end ?? ''}>
+          {selection
+            ? `bar ${formatBarPos(selection.start, bpm, downbeat)} → ${formatBarPos(selection.end, bpm, downbeat)} · ${Number.isInteger(Math.round(bars * 100) / 100) ? Math.round(bars) : bars.toFixed(2)} bar${Math.abs(bars - 1) < 1e-6 ? '' : 's'} · ${formatTime(selection.start)}–${formatTime(selection.end)}`
+            : 'none — Chop takes 4 bars from the playhead'}
+        </span>
+        <span className="muted small">From playhead:</span>
+        <div className="seg">
+          {[1, 2, 4, 8].map((n) => (
+            <button key={n} className="seg-btn" onClick={() => selectBars(n)} data-testid={`select-bars-${n}`} title={`Select ${n} bar${n > 1 ? 's' : ''} from the playhead`}>{n}</button>
+          ))}
+        </div>
+        <button className="btn btn-small" onClick={() => setSelection({ start: 0, end: duration })} data-testid="select-all" title="Select the whole track">All</button>
+        <button className="btn btn-small btn-ghost" onClick={() => setSelection(null)} disabled={!selection} data-testid="select-clear" title="Clear the selection">✕</button>
+        <span className="muted small bank-info" data-testid="bank-info">
+          Bank {BANKS[bank]}{cur.chop ? ` · ${describeChop(cur.chop)}` : ''}{cur.mono ? ' · mono' : ' · poly'}
+        </span>
+        <button className="btn btn-small" onClick={doUndo} disabled={!canUndo(hist)} data-testid="undo" title="Undo (Ctrl+Z)">↶ Undo</button>
+        <button className="btn btn-small" onClick={doRedo} disabled={!canRedo(hist)} data-testid="redo" title="Redo (Ctrl+Shift+Z)">↷ Redo</button>
+      </div>
+
+      <ChopControls chop={chop} setChop={setChop} onChop={chop.mode === 'manual' ? splitAtPlayhead : doChop} busy={busy}
+        targetLabel={targetLabel} hasSelection={!!selection} />
 
       <div className="editor-body">
-        <PadGrid slices={slices} bank={bank} setBank={setBank} activePads={activePads} selectedId={selectedId}
-          onTrigger={triggerPad} trackId={id} options={stableOptions} />
+        <PadGrid banks={program.banks} bank={bank} setBank={setBank} allowedBanks={allowedBanks} activePads={activePads}
+          selectedId={selectedId} onTrigger={triggerPad} onRelease={releasePad} onMono={setMono} onChokeAll={chokeAll}
+          onClear={clearCurrent} onStop={stopAll} trackId={id} options={stableOptions} />
         <div className="editor-side">
-          <ExportPanel track={track} slices={slices} options={options} setOptions={setOptions} />
+          <ExportPanel track={track} slices={slices} bank={bank} options={options} setOptions={setOptions} />
           <div className="panel slices-panel">
-            <div className="panel-title">Slices <span className="muted small">drag ⠿ into your DAW</span></div>
+            <div className="panel-title">Slices · Bank {BANKS[bank]} <span className="muted small">drag ⠿ into your DAW</span></div>
             <div className="slice-list" data-testid="slice-list">
               {slices.map((s, i) => (
                 <SliceRow key={s.id} slice={s} index={i} selected={s.id === selectedId} onSelect={setSelectedId}
-                  onChange={updateSlice} onPlay={playSlice} onDelete={deleteSlice} onDownload={downloadSlice}
+                  onChange={updateSlice} onPlay={(sl) => playSlice(sl, i)} onDelete={deleteSlice} onDownload={downloadSlice}
                   trackId={id} options={stableOptions} />
               ))}
-              {slices.length === 0 && <div className="muted">No slices — choose a mode and hit Chop.</div>}
+              {slices.length === 0 && <div className="muted">Empty bank — select a region and hit Chop.</div>}
             </div>
           </div>
         </div>

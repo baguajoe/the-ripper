@@ -7,7 +7,7 @@ from flask import Blueprint, jsonify, request, send_file
 
 from .. import config
 from ..app import ApiError
-from ..services import chopper, grid, media, pipeline, separator_ai
+from ..services import addon, chopper, grid, media, pipeline, separator_ai
 from ..services.library import public_track
 from .common import body, require_feature, require_track, run_quick, state
 
@@ -180,16 +180,17 @@ def _sensitivity() -> float:
         raise ApiError(400, "invalid_sensitivity", "sensitivity must be 0..1")
 
 
-def _onsets(track_id: str, rel: str, sensitivity: float) -> list[float]:
+def _onsets(track_id: str, rel: str, sensitivity: float) -> dict:
+    """{onsets: [s], strengths: [0..1]} (strengths in the same order)."""
     wav = state().library.track_dir(track_id) / rel
-    return run_quick("engine.services.pipeline:onsets", (str(wav), sensitivity), "Onset detection")
+    return run_quick("engine.services.pipeline:onsets_strength", (str(wav), sensitivity), "Onset detection")
 
 
 @bp.get("/tracks/<track_id>/onsets")
 def onsets(track_id: str):
     require_track(track_id, ready=True)
     s = _sensitivity()
-    return jsonify(sensitivity=s, onsets=_onsets(track_id, _source_file(track_id), s))
+    return jsonify(sensitivity=s, **_onsets(track_id, _source_file(track_id), s))
 
 
 def _source_file(track_id: str) -> str:
@@ -202,20 +203,67 @@ def _source_file(track_id: str) -> str:
     return f"stems/{src}.wav"
 
 
+def _float_arg(name: str, default: float | None = None) -> float | None:
+    raw = request.args.get(name)
+    if raw is None:
+        return default
+    try:
+        v = float(raw)
+    except ValueError:
+        raise ApiError(400, f"invalid_{name}", f"{name} must be a number")
+    if not math.isfinite(v):
+        raise ApiError(400, f"invalid_{name}", f"{name} must be a number")
+    return v
+
+
+def _division() -> float:
+    div = request.args.get("division", "1bar")
+    if div not in chopper.GRID_DIVISIONS:
+        raise ApiError(400, "invalid_division", f"division must be one of {list(chopper.GRID_DIVISIONS)}")
+    return chopper.GRID_DIVISIONS[div]
+
+
 @bp.get("/tracks/<track_id>/slices")
 def slices(track_id: str):
-    """Server-side slicing (same math as the UI) for scripts, tests and the plugin."""
+    """Server-side slicing (same math as the UI) for scripts, tests and the plugin.
+
+    Whole track: mode=grid&division=1bar | mode=transient&sensitivity=0.5
+    A selection: start=<s>&end=<s> with mode=even&count=8|16|32 | mode=grid&division=… |
+                 mode=transient&sensitivity=…&cap=16"""
     track = require_track(track_id, ready=True)
     a = track["analysis"]
     mode = request.args.get("mode", "grid")
+    start, end = _float_arg("start"), _float_arg("end")
+    if start is not None or end is not None:
+        start = max(0.0, start or 0.0)
+        end = min(track["duration"], end if end is not None else track["duration"])
+        if end - start < chopper.MIN_SLICE:
+            raise ApiError(400, "invalid_selection", "end must be after start")
+        if mode == "even":
+            try:
+                count = int(request.args.get("count", 16))
+            except ValueError:
+                count = 0
+            if count not in chopper.EVEN_COUNTS:
+                raise ApiError(400, "invalid_count", f"count must be one of {list(chopper.EVEN_COUNTS)}")
+            out = chopper.even_slices(start, end, count)
+        elif mode == "grid":
+            out = chopper.selection_grid_slices(a["bpm"], a["downbeat"], start, end, _division())
+        elif mode == "transient":
+            try:
+                cap = max(1, min(128, int(request.args.get("cap", chopper.MAX_TRANSIENTS))))
+            except ValueError:
+                raise ApiError(400, "invalid_cap", "cap must be an integer")
+            o = _onsets(track_id, "source.wav", _sensitivity())
+            out = chopper.selection_transient_slices(o["onsets"], o["strengths"], start, end, cap,
+                                                     a["bpm"], a["downbeat"])
+        else:
+            raise ApiError(400, "invalid_mode", "mode must be even, grid or transient")
+        return jsonify(slices=out)
     if mode == "grid":
-        div = request.args.get("division", "1bar")
-        if div not in chopper.GRID_DIVISIONS:
-            raise ApiError(400, "invalid_division", f"division must be one of {list(chopper.GRID_DIVISIONS)}")
-        out = chopper.grid_slices(a["bpm"], a["downbeat"], track["duration"],
-                                  chopper.GRID_DIVISIONS[div])
+        out = chopper.grid_slices(a["bpm"], a["downbeat"], track["duration"], _division())
     elif mode == "transient":
-        out = chopper.transient_slices(_onsets(track_id, "source.wav", _sensitivity()), track["duration"])
+        out = chopper.transient_slices(_onsets(track_id, "source.wav", _sensitivity())["onsets"], track["duration"])
     else:
         raise ApiError(400, "invalid_mode", "mode must be grid or transient")
     return jsonify(slices=out)
@@ -227,10 +275,13 @@ def start_stems(track_id: str):
     require_track(track_id, ready=True)
     data = body()
     engine = data.get("engine", "dsp")
-    model = data.get("model") or "htdemucs"
     if engine == "dsp":
+        model = data.get("model") or "dsp"
+        if model not in config.FAST_MODES:
+            raise ApiError(400, "invalid_model", f"Fast model must be one of {list(config.FAST_MODES)}")
         require_feature("stems_dsp")
     elif engine == "ai":
+        model = data.get("model") or "htdemucs"
         if model not in config.DEMUCS_MODELS:
             raise ApiError(400, "invalid_model", f"model must be one of {list(config.DEMUCS_MODELS)}")
         require_feature("stems_ai")
@@ -251,6 +302,23 @@ def start_stems(track_id: str):
     job_id = st.jobs.submit("stems", "engine.services.pipeline:run_stems", str(lib.track_dir(track_id)),
                             engine, model, meta={"track_id": track_id}, on_done=on_done)
     return jsonify(job_id=job_id), 202
+
+
+@bp.get("/tracks/<track_id>/stems/estimate")
+def estimate_stems(track_id: str):
+    """How long a separation will take on this machine (seconds, rough; learns from each run)."""
+    track = require_track(track_id, ready=True)
+    engine = request.args.get("engine", "ai")
+    model = request.args.get("model") or "htdemucs"
+    duration = float(track["duration"])
+    if engine == "dsp":
+        return jsonify(seconds=round(1.0 + 0.08 * duration, 1), device="cpu", learned=False)
+    if model not in config.DEMUCS_MODELS:
+        raise ApiError(400, "invalid_model", f"model must be one of {list(config.DEMUCS_MODELS)}")
+    probe = separator_ai.probe_nowait() or {}
+    device = probe.get("device") or "cpu"
+    from .. import runtime
+    return jsonify(addon.estimate_seconds(duration, model, device, runtime.cpu_count()))
 
 
 @bp.get("/tracks/<track_id>/stems")

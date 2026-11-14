@@ -3,12 +3,14 @@ import { useApp } from '../context.js'
 import { useNativeDrag } from '../hooks/useNativeDrag.js'
 import { dragSpec, toApiSlice } from '../lib/exportSpec.js'
 import { baseName } from '../lib/filenames.js'
+import { BANKS } from '../lib/pads.js'
 
 function ProTag({ allowed }) {
   return allowed ? null : <span className="badge badge-pro-lock" title="Pro feature">PRO</span>
 }
 
-export default function ExportPanel({ track, slices, options, setOptions }) {
+/** Exports the current bank (a bank = a kit). Banks after A get their letter in the file names. */
+export default function ExportPanel({ track, slices, bank = 0, options, setOptions }) {
   const { host, health, notify } = useApp()
   const [busy, setBusy] = useState(null)
   const [folder, setFolder] = useState(null)
@@ -24,6 +26,7 @@ export default function ExportPanel({ track, slices, options, setOptions }) {
   const f = health?.features ?? {}
   const a = track.analysis
   const set = (patch) => setOptions({ ...options, ...patch })
+  const kitBase = `${baseName(track.title, a.bpm, a.key)}${bank > 0 ? `_Bank${BANKS[bank]}` : ''}`
 
   const kitSpec = useCallback(() => (slices.length ? dragSpec(track.id, 'kit', { slices, options }) : null), [track.id, slices, options])
   const midiSpec = useCallback(() => (slices.length ? dragSpec(track.id, 'midi', { slices, options }) : null), [track.id, slices, options])
@@ -39,7 +42,7 @@ export default function ExportPanel({ track, slices, options, setOptions }) {
     try {
       const res = await host.download({
         path: `/tracks/${track.id}/export`,
-        filename: `${baseName(track.title, a.bpm, a.key)}_Kit.zip`,
+        filename: `${kitBase}_Kit.zip`,
         body: { ...options, slices: slices.map(toApiSlice), include_stems: true, include_midi: true },
       })
       saved(res)
@@ -55,7 +58,7 @@ export default function ExportPanel({ track, slices, options, setOptions }) {
     try {
       const res = await host.exportToFolder({
         trackId: track.id, kind, slices: slices.map(toApiSlice), options,
-        subfolder: `${baseName(track.title, a.bpm, a.key)}${kind === 'kit' ? '_Kit' : '_Slices'}`,
+        subfolder: `${kitBase}${kind === 'kit' ? '_Kit' : '_Slices'}`,
       })
       if (res) setFolder(res.folder)
       if (res) notify(`Exported ${res.files.length} file(s)`, 'success', { label: 'Show in folder', run: () => host.showItemInFolder(res.files[0]) })
@@ -69,7 +72,7 @@ export default function ExportPanel({ track, slices, options, setOptions }) {
   const none = slices.length === 0
   return (
     <div className="panel export-panel" data-testid="export-panel">
-      <div className="panel-title">Export to DAW</div>
+      <div className="panel-title">Export to DAW <span className="muted small">Bank {BANKS[bank]}</span></div>
       <div className="export-options">
         <div className="seg">
           {['oneshot', 'loop'].map((m) => (

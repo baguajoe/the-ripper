@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+import tempfile
 import time
 from pathlib import Path
 
@@ -8,6 +10,10 @@ import pytest
 from engine.app import create_app
 from engine.services import media
 from engine.tests import fixtures
+
+# Never touch the real user's app-data (engine.json, the AI add-on, timings) from tests. Set
+# before any worker process is spawned, so workers inherit it too.
+os.environ.setdefault("RIPPER_APP_DATA", tempfile.mkdtemp(prefix="ripper-test-appdata-"))
 
 
 @pytest.fixture(scope="session")

@@ -1,7 +1,7 @@
-# Optional HQ (AI) stem separation. Large download (~1-3 GB with CUDA builds).
-#   CPU / Apple Silicon:  pip install -r engine/requirements-ai.txt
-#   NVIDIA CUDA:          pip install torch torchaudio --index-url https://download.pytorch.org/whl/cu128
-#                         pip install demucs==4.1.0
+# DEVELOPERS ONLY: HQ (AI) stems from a source checkout. Users get the one-click HQ (AI) add-on
+# instead (scripts/build_ai_pack.py builds it; engine/services/addon.py installs it).
+#   pip install -r engine/requirements-ai.txt
+#   NVIDIA CUDA: pip install torch --index-url https://download.pytorch.org/whl/cu128 ; pip install demucs==4.1.0
+# Model weights are fetched on first use from the Demucs author's Hugging Face repos (pinned).
 torch>=2.5
-torchaudio>=2.5
 demucs==4.1.0

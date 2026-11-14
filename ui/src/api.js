@@ -95,10 +95,17 @@ export const api = {
   retryTrack: (id) => request(`/tracks/${id}/retry`, { method: 'POST' }),
   importLink: (url) => request('/tracks/link', { method: 'POST', body: { url } }),
   getJob: (id) => request(`/jobs/${id}`),
+  /** {onsets: [s], strengths: [0..1]} */
   onsets: (id, sensitivity, source = 'mix') =>
-    request(`/tracks/${id}/onsets?sensitivity=${sensitivity}&source=${encodeURIComponent(source)}`).then((r) => r.onsets),
+    request(`/tracks/${id}/onsets?sensitivity=${sensitivity}&source=${encodeURIComponent(source)}`),
   startStems: (id, engineName, model) => request(`/tracks/${id}/stems`, { method: 'POST', body: { engine: engineName, model } }),
   getStems: (id) => request(`/tracks/${id}/stems`).then((r) => r.stems),
+  stemsEstimate: (id, engineName, model) =>
+    request(`/tracks/${id}/stems/estimate?engine=${engineName}&model=${encodeURIComponent(model || '')}`),
+  // HQ (AI) add-on
+  aiAddon: () => request('/addons/ai'),
+  installAiAddon: () => request('/addons/ai/install', { method: 'POST', body: {} }),
+  removeAiAddon: () => request('/addons/ai', { method: 'DELETE' }),
 
   /** Raw bytes of the track (or a stem) for Web Audio decoding. */
   async audioBytes(id, source = 'mix') {

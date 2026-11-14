@@ -45,7 +45,7 @@ export default function AboutDialog({ host, health, onClose }) {
           <dt>Link import runtime</dt>
           <dd data-testid="about-js">{health ? (js ? `${js.name} ${js.version} (${SOURCE[js.source] || js.source})` : 'missing — some sites won’t import') : '—'}</dd>
           <dt>AI stems</dt>
-          <dd>{health ? (health.demucs_available ? `available (${health.device})` : 'not installed') : '—'}</dd>
+          <dd>{health ? (health.demucs_available ? `installed (${health.gpu || health.device})` : 'add-on not installed') : '—'}</dd>
           {info?.logDir && (<><dt>Logs</dt><dd><code>{info.logDir}</code></dd></>)}
         </dl>
         {host.capabilities.diagnostics && (

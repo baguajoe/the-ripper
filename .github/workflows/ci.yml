@@ -73,15 +73,22 @@ jobs:
       - name: Install CPU torch + Demucs (Linux)
         if: runner.os == 'Linux'
         run: |
-          "$RIPPER_PYTHON" -m pip install torch torchaudio --index-url https://download.pytorch.org/whl/cpu
+          "$RIPPER_PYTHON" -m pip install torch --index-url https://download.pytorch.org/whl/cpu
           "$RIPPER_PYTHON" -m pip install demucs==4.1.0
 
+      # Demucs weights for the HQ (AI) tests (fetched from the author's Hugging Face repos,
+      # pinned + checked; see engine/config.py DEMUCS_WEIGHTS)
       - name: Cache Demucs weights
         if: runner.os == 'Linux'
         uses: actions/cache@v4
         with:
-          path: ~/.cache/torch/hub
-          key: demucs-weights-htdemucs-v1
+          path: ~/.cache/ripper-demucs-models
+          key: demucs-weights-${{ hashFiles('engine/config.py') }}
+          restore-keys: demucs-weights-
+
+      - name: Point the HQ (AI) tests at the weights cache
+        if: runner.os == 'Linux'
+        run: echo "RIPPER_AI_MODELS_DIR=$HOME/.cache/ripper-demucs-models" >> "$GITHUB_ENV"
 
       - name: Install Node dependencies
         run: npm ci
@@ -120,11 +127,82 @@ jobs:
           path: desktop/test-results/
           if-no-files-found: ignore
 
+  # --- HQ (AI) add-on runtime, per platform: Python + torch + Demucs (no weights). Built,
+  # self-tested (4/6/2 stems on a 10 s clip with the pack's own Python) and cached.
+  ai-pack:
+    name: AI add-on (${{ matrix.variant }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { variant: win-cpu, os: windows-latest }
+          - { variant: win-cuda, os: windows-latest }
+          - { variant: mac-arm64, os: macos-latest }
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v5
+
+      - id: py
+        uses: actions/setup-python@v6
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: engine/requirements*.txt
+
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: "0.13.8"
+
+      - id: cache
+        uses: actions/cache@v4
+        with:
+          path: dist/ai
+          key: ai-pack-${{ matrix.variant }}-${{ hashFiles('scripts/build_ai_pack.py', 'engine/ai_runner/ripper_ai.py', 'engine/config.py') }}
+
+      - name: Cache Demucs weights (self-test)
+        if: steps.cache.outputs.cache-hit != 'true'
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ripper-demucs-models
+          key: demucs-weights-${{ hashFiles('engine/config.py') }}
+          restore-keys: demucs-weights-
+
+      - name: Build + self-test the add-on
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: |
+          df -h . || true
+          "${{ steps.py.outputs.python-path }}" -m pip install -r engine/requirements.txt
+          RIPPER_AI_MODELS_DIR="$HOME/.cache/ripper-demucs-models" \
+            "${{ steps.py.outputs.python-path }}" scripts/build_ai_pack.py build --variant ${{ matrix.variant }} \
+            --out dist/ai --work "$RUNNER_TEMP/ai-pack" --selftest
+          rm -rf "$RUNNER_TEMP/ai-pack"
+
+      - name: Add-on size
+        run: |
+          ls -l dist/ai
+          echo "- \`${{ matrix.variant }}\`: $(du -ch dist/ai/*.zip.* | tail -1 | cut -f1)" >> "$GITHUB_STEP_SUMMARY"
+
+      # The CUDA runtime (~3 GB) only travels to the release; the installer jobs test the CPU
+      # and Apple Silicon builds (CI has no NVIDIA GPU; the CUDA build passed its self-test on CPU).
+      - name: Upload add-on
+        if: matrix.variant != 'win-cuda' || startsWith(github.ref, 'refs/tags/v')
+        uses: actions/upload-artifact@v4
+        with:
+          name: ai-pack-${{ matrix.variant }}
+          path: dist/ai/
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 0
+
   installers:
     name: Installer (${{ matrix.os }})
-    needs: test
+    needs: [test, ai-pack]
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 60
+    timeout-minutes: 120
     strategy:
       fail-fast: false
       matrix:
@@ -133,10 +211,12 @@ jobs:
             script: dist:mac
             artifact: the-ripper-macos
             files: desktop/release/*.dmg
+            ai: mac-arm64
           - os: windows-latest
             script: dist:win
             artifact: the-ripper-windows
             files: desktop/release/*.exe
+            ai: win-cpu
     defaults:
       run:
         shell: bash
@@ -164,8 +244,21 @@ jobs:
       - name: Install Node dependencies
         run: npm ci
 
-      # ffmpeg + ffprobe + Deno into desktop/vendor/<os>/ (checksummed; see LICENSES.md)
-      - name: Download bundled ffmpeg + Deno
+      # macOS: ffmpeg + ffprobe built from source, LGPL (cached: only rebuilt when the script changes)
+      - name: Cache LGPL ffmpeg (macOS)
+        if: runner.os == 'macOS'
+        id: ffcache
+        uses: actions/cache@v4
+        with:
+          path: build/ffmpeg-mac
+          key: ffmpeg-mac-lgpl-${{ hashFiles('scripts/build_ffmpeg_mac.sh') }}
+
+      - name: Build LGPL ffmpeg from source (macOS)
+        if: runner.os == 'macOS' && steps.ffcache.outputs.cache-hit != 'true'
+        run: bash scripts/build_ffmpeg_mac.sh build/ffmpeg-mac
+
+      # ffmpeg + ffprobe + Deno into desktop/vendor/<os>/ (checksummed, LGPL checked; see LICENSES.md)
+      - name: Bundled ffmpeg + Deno
         run: '"$RIPPER_PYTHON" scripts/fetch_vendor.py --check'
 
       - name: Build installer (UI + PyInstaller engine + electron-builder)
@@ -249,6 +342,22 @@ jobs:
           "$RIPPER_PYTHON" -m engine.tests.fixtures
           ls -l engine/tests/fixtures/generated/
 
+      # The add-on built in this run, served locally; the installed app installs it from there
+      # (the model weights still come from the Demucs author's Hugging Face repos).
+      - name: Download the HQ (AI) add-on built in this run
+        uses: actions/download-artifact@v4
+        with:
+          name: ai-pack-${{ matrix.ai }}
+          path: ai-serve
+
+      - name: Serve the add-on locally
+        run: |
+          "$RIPPER_PYTHON" scripts/build_ai_pack.py manifest --out ai-serve/ripper-ai-manifest.json ai-serve/${{ matrix.ai }}.json
+          ls -l ai-serve
+          (cd ai-serve && nohup "$RIPPER_PYTHON" -m http.server 8799 --bind 127.0.0.1 > ../ai-serve.log 2>&1 &)
+          for i in $(seq 1 30); do curl -fsS http://127.0.0.1:8799/ripper-ai-manifest.json >/dev/null && break; sleep 1; done
+          echo "RIPPER_E2E_AI_MANIFEST=http://127.0.0.1:8799/ripper-ai-manifest.json" >> "$GITHUB_ENV"
+
       - name: "Windows: report the runner's integrity level (elevation)"
         if: runner.os == 'Windows'
         continue-on-error: true
@@ -272,6 +381,22 @@ jobs:
           export TMPDIR="$RIPPER_TEST_HOME/Temp" TEMP="$RIPPER_TEST_HOME/Temp" TMP="$RIPPER_TEST_HOME/Temp"
           PATH="$CLEAN_PATH" RIPPER_E2E_EXECUTABLE="$RIPPER_INSTALLED_APP" RIPPER_E2E_EXPECT_BUNDLED=1 \
             "$NODE_BIN" ../node_modules/@playwright/test/cli.js test
+
+      - name: "Clean machine: macOS bundled ffmpeg is an LGPL build"
+        if: runner.os == 'macOS'
+        run: |
+          dir="$(dirname "$RIPPER_INSTALLED_ENGINE")"
+          for b in ffmpeg ffprobe; do
+            conf="$("$dir/$b" -hide_banner -buildconf)"
+            echo "$b: $(echo "$conf" | tr -s ' \n' ' ')"
+            if echo "$conf" | grep -q -e '--enable-gpl' -e '--enable-nonfree'; then echo "::error::$b has a GPL/non-free configuration"; exit 1; fi
+            "$dir/$b" -hide_banner -L | tr -s ' \n' ' ' | grep -q "GNU Lesser General Public License" || { echo "::error::$b -L does not report the LGPL"; exit 1; }
+            if otool -L "$dir/$b" | tail -n +2 | grep -v -E '/usr/lib/|/System/Library/'; then echo "::error::$b links a non-system library"; exit 1; fi
+          done
+          "$dir/ffmpeg" -hide_banner -L | head -3
+          lic="$(dirname "$dir")/licenses/ffmpeg"
+          grep -q "GNU LESSER GENERAL PUBLIC LICENSE" "$lic/LICENSE.txt" && grep -q "ffmpeg-9.0.2.tar.xz" "$lic/SOURCE.txt"
+          echo "LGPL ffmpeg + ffprobe, licence + source info shipped"
 
       - name: "Clean machine: macOS quarantine was cleared on the bundled helpers"
         if: runner.os == 'macOS'
@@ -326,11 +451,12 @@ jobs:
           path: desktop/test-results/
           if-no-files-found: ignore
 
-  # Tag push (v*): publish a GitHub release with both installers once everything is green.
+  # Tag push (v*): publish a GitHub release with both installers, their zips and the HQ (AI)
+  # add-on (runtime parts + manifest; no model weights) once everything is green.
   release:
     name: GitHub release
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: installers
+    needs: [installers, ai-pack]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -341,6 +467,18 @@ jobs:
           path: dist
           pattern: the-ripper-*
           merge-multiple: true
+      - uses: actions/download-artifact@v4
+        with:
+          path: ai
+          pattern: ai-pack-*
+          merge-multiple: true
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - name: HQ (AI) add-on manifest
+        run: |
+          python scripts/build_ai_pack.py manifest --out ai/ripper-ai-manifest.json ai/win-cpu.json ai/win-cuda.json ai/mac-arm64.json
+          ls -l ai
       - name: Create release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -350,4 +488,5 @@ jobs:
           [ -f "$notes" ] || { echo "Release ${GITHUB_REF_NAME}" > /tmp/notes.md; notes=/tmp/notes.md; }
           v="${GITHUB_REF_NAME#v}"
           (cd dist && zip -0 -q "The-Ripper-$v-Windows.zip" *.exe && zip -0 -q "The-Ripper-$v-macOS.zip" *.dmg)
-          gh release create "$GITHUB_REF_NAME" dist/*.exe dist/*.dmg dist/*.zip --title "The Ripper ${GITHUB_REF_NAME}" --notes-file "$notes" --verify-tag
+          gh release create "$GITHUB_REF_NAME" dist/*.exe dist/*.dmg dist/*.zip ai/ripper-ai-*.zip.* ai/ripper-ai-manifest.json \
+            --title "The Ripper ${GITHUB_REF_NAME}" --notes-file "$notes" --verify-tag

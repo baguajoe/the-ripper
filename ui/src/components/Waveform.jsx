@@ -9,15 +9,20 @@ import { gridLines } from '../lib/grid.js'
 const COLORS = ['rgba(255, 92, 57, 0.18)', 'rgba(64, 196, 255, 0.16)']
 const SELECTED = 'rgba(255, 196, 0, 0.30)'
 const LOOP = 'rgba(120, 255, 140, 0.20)'
+const SELECTION = 'rgba(64, 160, 255, 0.20)'
 const TIMELINE_H = 22 // timeline plugin row under the waveform
 
 /**
  * wavesurfer 8 + Regions/Timeline/Zoom/Minimap with a beat/bar grid overlay.
- * Slices are the source of truth (owned by the parent); regions mirror them.
+ * Slices and the selection are owned by the parent; regions mirror them.
+ *   dragMode 'select': dragging on the waveform makes a selection (onSelectionChange)
+ *   dragMode 'slice':  dragging makes a slice (onCreate) - Manual chopping
+ * Bar numbers are clickable: onBarClick(bar, shiftKey).
  */
 const Waveform = forwardRef(function Waveform(
-  { audioBuffer, url, bpm, downbeat, slices, selectedId, loop, dragSelect,
-    onSliceChange, onSelect, onCreate, onLoopChange, onReady, onTime, onPlayState, zoom = 0, follow = false },
+  { audioBuffer, url, bpm, downbeat, slices, selectedId, loop, selection, dragMode = 'select',
+    onSliceChange, onSelect, onCreate, onLoopChange, onSelectionChange, onBarClick, onReady, onTime, onPlayState,
+    zoom = 0, follow = false },
   ref,
 ) {
   const container = useRef(null)
@@ -54,7 +59,9 @@ const Waveform = forwardRef(function Waveform(
   useEffect(() => { if (ready) ws.current?.setOptions({ autoScroll: follow, autoCenter: follow }) }, [ready, follow])
 
   useEffect(() => { loopRef.current = loop }, [loop])
-  useEffect(() => { cbs.current = { onSliceChange, onSelect, onCreate, onLoopChange, onReady, onTime, onPlayState } })
+  const modeRef = useRef(dragMode)
+  useEffect(() => { modeRef.current = dragMode }, [dragMode])
+  useEffect(() => { cbs.current = { onSliceChange, onSelect, onCreate, onLoopChange, onSelectionChange, onBarClick, onReady, onTime, onPlayState } })
 
   useImperativeHandle(ref, () => ({
     playPause: () => ws.current?.playPause(),
@@ -131,15 +138,19 @@ const Waveform = forwardRef(function Waveform(
         syncing.current = true
         r.remove()
         syncing.current = false
-        if (end - start > 0.02) cbs.current.onCreate?.({ start, end })
+        if (end - start > 0.02) {
+          if (modeRef.current === 'slice') cbs.current.onCreate?.({ start, end })
+          else cbs.current.onSelectionChange?.({ start, end })
+        }
         return
       }
       if (r.id === '__loop') cbs.current.onLoopChange?.({ start: r.start, end: r.end })
+      else if (r.id === '__sel') cbs.current.onSelectionChange?.({ start: r.start, end: r.end })
       else cbs.current.onSliceChange?.(r.id, { start: r.start, end: r.end })
     })
     reg.on('region-clicked', (r, e) => {
       e.stopPropagation()
-      if (r.id !== '__loop') cbs.current.onSelect?.(r.id, { play: true })
+      if (r.id !== '__loop' && r.id !== '__sel') cbs.current.onSelect?.(r.id, { play: true })
     })
 
     return () => {
@@ -150,11 +161,11 @@ const Waveform = forwardRef(function Waveform(
     }
   }, [audioBuffer, url])
 
-  // Drag-to-select creates manual slices.
+  // Drag on the waveform: a selection (or, in Manual mode, a new slice).
   useEffect(() => {
-    if (!ready || !dragSelect || !regions.current) return undefined
-    return regions.current.enableDragSelection({ color: 'rgba(255, 210, 63, 0.25)' })
-  }, [ready, dragSelect])
+    if (!ready || !regions.current || dragMode === 'none') return undefined
+    return regions.current.enableDragSelection({ color: dragMode === 'slice' ? 'rgba(255, 210, 63, 0.25)' : SELECTION })
+  }, [ready, dragMode])
 
   // Beat / bar grid overlay (percent positions survive zoom).
   useEffect(() => {
@@ -176,10 +187,18 @@ const Waveform = forwardRef(function Waveform(
         d.dataset.bar = String(bar)
         const tag = document.createElement('span')
         tag.textContent = String(bar)
+        tag.dataset.testid = `bar-tag-${bar}`
+        tag.title = `Select bar ${bar} (Shift-click another bar to select a range)`
         Object.assign(tag.style, {
-          position: 'absolute', top: '1px', left: '4px', font: '600 10px ui-monospace, monospace',
-          color: '#ffd23f', textShadow: '0 1px 2px #000',
+          position: 'absolute', top: '1px', left: '2px', font: '600 10px ui-monospace, monospace',
+          color: '#ffd23f', textShadow: '0 1px 2px #000', pointerEvents: 'auto', cursor: 'pointer',
+          padding: '0 3px', borderRadius: '3px', background: 'rgba(0, 0, 0, 0.35)', userSelect: 'none',
         })
+        // own the click: no seek, no drag-select starting from a bar number
+        const stop = (e) => { e.stopPropagation(); e.preventDefault() }
+        tag.addEventListener('pointerdown', stop)
+        tag.addEventListener('mousedown', stop)
+        tag.addEventListener('click', (e) => { stop(e); cbs.current.onBarClick?.(bar, e.shiftKey) })
         d.appendChild(tag)
       }
       frag.appendChild(d)
@@ -188,12 +207,15 @@ const Waveform = forwardRef(function Waveform(
     ov.dataset.lines = String(lines.length)
   }, [ready, bpm, downbeat, audioBuffer])
 
-  // Mirror slices (+ loop) into regions.
+  // Mirror the selection, slices and loop into regions.
   useEffect(() => {
     const reg = regions.current
     if (!ready || !reg) return
     syncing.current = true
     reg.clearRegions()
+    if (selection && selection.end > selection.start) {
+      reg.addRegion({ id: '__sel', start: selection.start, end: selection.end, color: SELECTION, drag: true, resize: true })
+    }
     slices.forEach((s, i) => {
       const label = document.createElement('span')
       label.className = 'region-label'
@@ -216,11 +238,12 @@ const Waveform = forwardRef(function Waveform(
       reg.addRegion({ id: '__loop', start: loop.start, end: loop.end, color: LOOP, drag: true, resize: true })
     }
     syncing.current = false
-  }, [ready, slices, selectedId, loop])
+  }, [ready, slices, selectedId, loop, selection])
 
   return (
     <div className="waveform-wrap">
-      <div ref={container} className="waveform" data-testid="waveform" data-ready={ready ? 'true' : 'false'} />
+      <div ref={container} className="waveform" data-testid="waveform" data-ready={ready ? 'true' : 'false'}
+        data-selection={selection ? `${selection.start.toFixed(3)}-${selection.end.toFixed(3)}` : ''} />
       <div ref={minimap} className="minimap" />
     </div>
   )

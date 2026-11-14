@@ -444,7 +444,8 @@ _pools_lock = threading.Lock()
 def pool(name: str) -> WorkerPool:
     """'jobs'  = imports + stems (long-running),
     'quick' = export / render / onsets (interactive, so never stuck behind a long job),
-    'safe'  = retries: one single-threaded worker, the most conservative settings."""
+    'safe'  = retries: one single-threaded worker, the most conservative settings,
+    'addon' = the HQ (AI) add-on download (long, network bound; never blocks imports)."""
     with _pools_lock:
         p = _pools.get(name)
         if p is None or p._closed:
@@ -453,6 +454,8 @@ def pool(name: str) -> WorkerPool:
                 p = WorkerPool(name, config.JOB_WORKERS)
             elif name == "safe":
                 p = WorkerPool(name, 1, keep_warm=0, threads=1)
+            elif name == "addon":
+                p = WorkerPool(name, 1, keep_warm=0)
             else:
                 p = WorkerPool(name, 2, keep_warm=1)
             _pools[name] = p

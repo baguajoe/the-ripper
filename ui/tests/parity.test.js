@@ -2,7 +2,7 @@
 import { describe, expect, it } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
-import { gridBeats, gridSlices, snap, transientSlices } from '../src/lib/grid.js'
+import { gridBeats, gridSlices, selectionSlices, snap, transientSlices } from '../src/lib/grid.js'
 import { buildFilename } from '../src/lib/filenames.js'
 
 // Generated from the Python engine (python -m engine.tests.parity_cases > docs/parity.json).
@@ -23,5 +23,7 @@ describe('JS matches the Python engine', () => {
   })
   it.each(parity.snap)('snap $args', ({ args, t }) => close(snap(...args), t))
   it.each(parity.transient)('transientSlices $args', ({ args, slices }) => sameSlices(transientSlices(...args), slices))
+  it.each(parity.selection)('selectionSlices $mode $start-$end', ({ mode, start, end, opts, slices }) =>
+    sameSlices(selectionSlices(mode, start, end, opts), slices))
   it.each(parity.filenames)('buildFilename $args', ({ args, name }) => expect(buildFilename(...args)).toBe(name))
 })

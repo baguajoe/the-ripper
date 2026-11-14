@@ -53,7 +53,7 @@ def test_full_flow(client, fx, tmp_path):
                     json={"slices": sl, "include_midi": True, "include_stems": True})
     assert r.status_code == 200
     z = zipfile.ZipFile(io.BytesIO(r.data))
-    assert len(z.namelist()) == 6 + 4 + 1
+    assert len(z.namelist()) == 6 + 3 + 1  # slices + Fast stems (drums/bass/music) + MIDI
 
     # render to folder (what drag-to-DAW uses)
     r = client.post(f"/api/v1/tracks/{ids['track_id']}/render",
@@ -70,7 +70,7 @@ def test_full_flow(client, fx, tmp_path):
     (tmp_path / "x").mkdir()
     r = client.post(f"/api/v1/tracks/{ids['track_id']}/render",
                     json={"kind": "kit", "slices": sl, "dest_dir": str(tmp_path / "x")})
-    assert r.status_code == 200 and len(r.get_json()["files"]) == 11
+    assert r.status_code == 200 and len(r.get_json()["files"]) == 10
     r = client.post(f"/api/v1/tracks/{ids['track_id']}/render",
                     json={"kind": "midi", "slices": sl, "dest_dir": str(tmp_path)})
     assert r.get_json()["files"][0].endswith("_slices.mid")
@@ -137,10 +137,12 @@ def test_pro_gating(tmp_path, fx):
     assert wait_job(c, ids["job_id"])["status"] == "done"
     tid = ids["track_id"]
     h = c.get("/api/v1/health").get_json()
-    assert h["pro"] is False and h["features"]["stems_ai"] is False and h["features"]["stems_dsp"] is True
+    assert h["pro"] is False and h["features"]["stems_dsp"] is True
+    # HQ (AI) stems (all models) are free for now; banks C-H, kits and batch export stay Pro
+    assert h["features"]["stems_ai"] is True and h["features"]["stems_6"] is True
+    assert h["features"]["banks_beyond_b"] is False
+    assert h["features"]["export_kit"] is False and h["features"]["batch_export"] is False
     sl = c.get(f"/api/v1/tracks/{tid}/slices?mode=grid&division=1bar").get_json()["slices"]
-    r = c.post(f"/api/v1/tracks/{tid}/stems", json={"engine": "ai", "model": "htdemucs"})
-    assert r.status_code == 403 and r.get_json()["error"] == "pro_required"
     assert c.post(f"/api/v1/tracks/{tid}/export", json={"slices": sl}).status_code == 403
     assert c.post(f"/api/v1/tracks/{tid}/export", json={"slices": sl[:1], "include_midi": True}).status_code == 403
     r = c.post(f"/api/v1/tracks/{tid}/export", json={"slices": sl[:1], "format": "wav"})

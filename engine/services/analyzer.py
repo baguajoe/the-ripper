@@ -174,11 +174,24 @@ def onset_params(sensitivity: float) -> dict:
 
 
 def detect_onsets(y: np.ndarray, sensitivity: float = 0.5, sr: int = ANALYSIS_SR) -> list[float]:
+    return detect_onsets_with_strength(y, sensitivity, sr)[0]
+
+
+def detect_onsets_with_strength(y: np.ndarray, sensitivity: float = 0.5,
+                                sr: int = ANALYSIS_SR) -> tuple[list[float], list[float]]:
+    """Onset times (backtracked to the preceding energy minimum) and each onset's peak
+    strength (0..1, the normalised onset envelope at the peak)."""
     p = onset_params(sensitivity)
-    onsets = librosa.onset.onset_detect(y=y, sr=sr, hop_length=HOP, units="time",
-                                        backtrack=True, delta=p["delta"], wait=p["wait"],
-                                        pre_max=1, post_max=1, pre_avg=3, post_avg=3)
-    return [round(float(t), 4) for t in onsets]
+    env = librosa.onset.onset_strength(y=y, sr=sr, hop_length=HOP)
+    env = env - np.min(env) if env.size else env
+    if env.size:
+        env = env / (np.max(env) + 1e-12)
+    kw = dict(onset_envelope=env, sr=sr, hop_length=HOP, delta=p["delta"], wait=p["wait"],
+              pre_max=1, post_max=1, pre_avg=3, post_avg=3, normalize=False)
+    peaks = librosa.onset.onset_detect(units="frames", backtrack=False, **kw)
+    back = librosa.onset.onset_backtrack(peaks, env) if len(peaks) else peaks
+    times = librosa.frames_to_time(back, sr=sr, hop_length=HOP)
+    return ([round(float(t), 4) for t in times], [round(float(env[f]), 4) for f in peaks])
 
 
 def peaks(y: np.ndarray, count: int = PEAK_COUNT) -> list[float]:
