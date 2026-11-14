@@ -56,6 +56,8 @@ nsis:
   allowToChangeInstallationDirectory: true
   perMachine: false
   shortcutName: The Ripper
+  # Uninstall removes the track library + settings (kept on updates). See assets/installer.nsh.
+  include: assets/installer.nsh
 linux:
   target: [AppImage]
   category: Audio

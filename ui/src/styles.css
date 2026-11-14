@@ -208,3 +208,52 @@ input[type=range] { accent-color: var(--accent); }
 .drop-overlay-inner { text-align: center; display: grid; gap: 8px; font-size: 18px; }
 .banner-warn { background: rgba(255, 176, 32, 0.12); border-bottom: 1px solid rgba(255, 176, 32, 0.4); }
 .track-card .error-text { display: flex; gap: 8px; align-items: center; justify-content: space-between; }
+
+/* --- Editor: fits the window, never scrolls the page ------------------------------------------
+   At normal window sizes the editor is exactly as tall as the content area: the waveform and
+   the pad grid take the spare space, the slice list scrolls inside its own panel. The content
+   box uses overflow: clip (not a scroll container), so nothing - focus, a lit pad, the
+   playhead - can scroll the page. Small windows fall back to a scrolling page (below). */
+.content:has(> .editor) { overflow: clip; display: flex; flex-direction: column; padding: 14px 18px; }
+.editor {
+  flex: 1; min-height: 0; min-width: 0; gap: 10px;
+  grid-template-rows: auto minmax(130px, 1fr) auto auto minmax(300px, 1.7fr);
+  grid-template-columns: minmax(0, 1fr);
+}
+.editor-head, .transport, .chop-controls { flex-wrap: nowrap; min-width: 0; }
+.editor-head > *, .transport > *, .chop-controls > * { flex-shrink: 0; }
+.editor-head .editor-title { flex: 1 1 auto; min-width: 80px; }
+.waveform-wrap { min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
+.waveform { flex: 1 1 0; min-height: 0; overflow: hidden; }
+.minimap { flex: none; height: 28px; }
+.waveform-loading { height: auto; min-height: 0; }
+
+/* Text that changes during playback has a fixed width, so nothing beside it reflows. */
+.btn-play { width: 150px; justify-content: center; }
+.time { display: inline-block; min-width: 17ch; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.zoom-value { display: inline-block; width: 7ch; font-variant-numeric: tabular-nums; }
+.slice-count { display: inline-block; min-width: 9ch; margin-left: auto; text-align: right; font-variant-numeric: tabular-nums; }
+
+.editor .editor-body {
+  min-height: 0; align-items: stretch;
+  grid-template-columns: minmax(300px, 0.85fr) minmax(0, 1.15fr);
+}
+.editor-side { display: flex; flex-direction: column; gap: 10px; min-height: 0; min-width: 0; }
+.editor-side .export-panel { flex: none; }
+.slices-panel { flex: 1 1 0; min-height: 0; grid-template-rows: auto minmax(0, 1fr); }
+.slices-panel .slice-list { max-height: none; min-height: 0; overflow: auto; align-content: start; }
+.editor .padgrid-wrap { min-height: 0; grid-template-rows: auto minmax(0, 1fr); }
+.editor .padgrid { grid-template-rows: repeat(4, minmax(0, 1fr)); min-height: 0; }
+.editor .pad { aspect-ratio: auto; min-height: 0; }
+.editor .bank-row .muted { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; flex: 1 1 0; }
+
+/* Small windows: let the page scroll instead of squeezing everything. */
+@media (max-width: 1099px), (max-height: 639px) {
+  .content:has(> .editor) { overflow: auto; display: block; }
+  .editor { grid-template-rows: auto 220px auto auto auto; }
+  .editor-head, .transport, .chop-controls { flex-wrap: wrap; }
+  .editor .editor-body { grid-template-columns: 1fr; }
+  .editor .pad { aspect-ratio: 5 / 3; min-height: 64px; }
+  .editor .padgrid { grid-template-rows: none; }
+  .slices-panel .slice-list { max-height: 340px; }
+}

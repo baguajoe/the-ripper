@@ -290,6 +290,34 @@ jobs:
           NUMBA_NUM_THREADS: "24"
         run: PATH="$CLEAN_PATH" RIPPER_ENGINE_CMD="$RIPPER_INSTALLED_ENGINE" SMOKE_EXPECT_BUNDLED=1 bash scripts/smoke.sh
 
+      # Uninstall must remove the user's library (a reinstall must start empty), while an
+      # update installed over the top must keep it.
+      - name: "Windows: update keeps the library, uninstall removes it"
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $dir = 'C:\Users\J. Test\AppData\Local\Programs\The Ripper'
+          $engineData = Join-Path $env:APPDATA 'TheRipper'
+          $appData = Join-Path $env:APPDATA 'The Ripper'
+          New-Item -ItemType Directory -Force "$engineData\storage\0123456789abcdef0123456789abcdef", $appData | Out-Null
+          Set-Content "$engineData\storage\0123456789abcdef0123456789abcdef\meta.json" '{"id":"0123456789abcdef0123456789abcdef","title":"Old track","status":"ready"}'
+          Set-Content "$appData\settings.json" '{}'
+          # 1) install the same build again over the existing one = an update: data must stay
+          $inst = Get-ChildItem desktop/release/*.exe | Select-Object -First 1
+          Start-Process -FilePath $inst.FullName -ArgumentList '/S', "/D=$dir" -Wait
+          Start-Sleep -Seconds 5
+          if (-not (Test-Path "$engineData\storage\0123456789abcdef0123456789abcdef\meta.json")) { throw 'an update deleted the library' }
+          if (-not (Test-Path "$appData\settings.json")) { throw 'an update deleted the settings' }
+          Write-Host 'update over the top: library + settings kept'
+          # 2) uninstall: data must be gone
+          $un = Get-ChildItem "$dir\Uninstall*.exe" | Select-Object -First 1
+          Start-Process -FilePath $un.FullName -ArgumentList '/S' -Wait
+          for ($i = 0; $i -lt 60 -and ((Test-Path $engineData) -or (Test-Path $appData) -or (Test-Path "$dir\*.exe")); $i++) { Start-Sleep -Seconds 1 }
+          if (Test-Path $engineData) { Get-ChildItem -Recurse $engineData | Select-Object -First 20; throw "uninstall left $engineData behind" }
+          if (Test-Path $appData) { throw "uninstall left $appData behind" }
+          if (Test-Path "$dir\*.exe") { throw 'uninstall left the app behind' }
+          Write-Host 'uninstall: app, library and settings removed'
+
       - name: Upload Playwright results
         if: failure()
         uses: actions/upload-artifact@v4
@@ -320,4 +348,6 @@ jobs:
           ls -l dist
           notes="docs/release-notes/${GITHUB_REF_NAME}.md"
           [ -f "$notes" ] || { echo "Release ${GITHUB_REF_NAME}" > /tmp/notes.md; notes=/tmp/notes.md; }
-          gh release create "$GITHUB_REF_NAME" dist/*.exe dist/*.dmg --title "The Ripper ${GITHUB_REF_NAME}" --notes-file "$notes" --verify-tag
+          v="${GITHUB_REF_NAME#v}"
+          (cd dist && zip -0 -q "The-Ripper-$v-Windows.zip" *.exe && zip -0 -q "The-Ripper-$v-macOS.zip" *.dmg)
+          gh release create "$GITHUB_REF_NAME" dist/*.exe dist/*.dmg dist/*.zip --title "The Ripper ${GITHUB_REF_NAME}" --notes-file "$notes" --verify-tag

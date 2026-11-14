@@ -1,7 +1,7 @@
 {
   "name": "the-ripper",
   "private": true,
-  "version": "1.1.1",
+  "version": "1.1.2",
   "description": "The Ripper — producer tool: link/WAV/MP3 -> beat grid -> chops, stems, drag-to-DAW",
   "workspaces": [
     "ui",
