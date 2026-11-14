@@ -267,7 +267,11 @@ def test_variant_detection(monkeypatch):
     monkeypatch.setattr(addon, "IS_WIN", False)
     monkeypatch.setattr(addon.sys, "platform", "darwin")
     monkeypatch.setattr(addon.platform, "machine", lambda: "arm64")
+    monkeypatch.setattr(addon.platform, "mac_ver", lambda: ("15.1", ("", "", ""), "arm64"))
     assert addon.detect_variant() == ("mac-arm64", None)
+    monkeypatch.setattr(addon.platform, "mac_ver", lambda: ("13.6.1", ("", "", ""), "arm64"))
+    assert addon.detect_variant() == (None, "HQ (AI) stems need macOS 14 (Sonoma) or later")
+    monkeypatch.setattr(addon.platform, "mac_ver", lambda: ("15.1", ("", "", ""), "arm64"))
     monkeypatch.setattr(addon.platform, "machine", lambda: "x86_64")
     assert addon.detect_variant()[0] is None
 

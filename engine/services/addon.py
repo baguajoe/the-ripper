@@ -44,6 +44,8 @@ CHUNK = 1 << 20
 RETRIES = 5
 USER_AGENT = f"TheRipper/{config.ENGINE_VERSION}"
 
+MAC_MIN_MAJOR = 14  # torch's Apple Silicon wheels need macOS 14+
+
 VARIANT_LABELS = {
     "win-cuda": "NVIDIA GPU (CUDA)",
     "win-cpu": "CPU",
@@ -126,6 +128,9 @@ def detect_variant() -> tuple[str | None, str | None]:
     if sys.platform == "darwin":
         if platform.machine() != "arm64":
             return None, "HQ (AI) stems need a Mac with Apple Silicon"
+        major = int((platform.mac_ver()[0] or "0").split(".")[0] or 0)
+        if 0 < major < MAC_MIN_MAJOR:  # the add-on's torch wheels are built for macOS 14+
+            return None, "HQ (AI) stems need macOS 14 (Sonoma) or later"
         return "mac-arm64", None
     return None, "The HQ (AI) add-on is available for Windows and macOS"
 
