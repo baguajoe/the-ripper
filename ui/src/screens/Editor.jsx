@@ -20,6 +20,7 @@ import { formatTime } from '../lib/format.js'
 function Playhead({ subscribe, duration }) {
   const [t, setT] = useState(0)
   useEffect(() => subscribe(setT), [subscribe])
+  // Fixed width (see .time): the text changes 10x a second and must never reflow the row.
   return <span className="time" data-testid="playhead">{formatTime(t)} / {formatTime(duration)}</span>
 }
 
@@ -59,7 +60,8 @@ function Editor({ id, source }) {
     return () => timeListeners.current.delete(fn)
   }, [])
   const onTime = useCallback((t) => { for (const fn of timeListeners.current) fn(t) }, [])
-  const [zoom, setZoom] = useState(40)
+  const [zoom, setZoom] = useState(0) // 0 = whole track fits the width
+  const [follow, setFollow] = useState(false) // scroll the zoomed waveform with the playhead
   const [options, setOptionsState] = useState(DEFAULT_EXPORT)
   const wave = useRef(null)
   const player = useRef(null)
@@ -268,19 +270,23 @@ function Editor({ id, source }) {
           slices={slices} selectedId={selectedId} loop={loop} dragSelect={chop.mode === 'manual'}
           onSliceChange={onRegionChange} onSelect={onSelect} onCreate={onRegionCreate}
           onLoopChange={(r) => setLoop((l) => ({ ...l, start: snapT(r.start), end: snapT(r.end) }))}
-          onTime={onTime} onPlayState={setPlaying} />
+          onTime={onTime} onPlayState={setPlaying} zoom={zoom} follow={follow} />
       )}
 
       <div className="transport">
-        <button className="btn" onClick={() => wave.current?.playPause()} data-testid="play-toggle">
+        <button className="btn btn-play" onClick={() => wave.current?.playPause()} data-testid="play-toggle">
           {playing ? '❚❚ Pause' : '▶ Play'} <kbd>Space</kbd>
         </button>
         <button className={`btn ${loop.active ? 'btn-on' : ''}`} onClick={toggleLoop} data-testid="loop-toggle">⟳ Loop <kbd>L</kbd></button>
         <Playhead subscribe={subscribeTime} duration={duration} />
         <label className="slider-label">Zoom
-          <input type="range" min="10" max="800" value={zoom} onChange={(e) => { const z = Number(e.target.value); setZoom(z); wave.current?.zoom(z) }} data-testid="zoom" />
+          <input type="range" min="0" max="800" step="10" value={zoom} onChange={(e) => setZoom(Number(e.target.value))} data-testid="zoom" />
+          <span className="zoom-value">{zoom === 0 ? 'Fit' : `${zoom} px/s`}</span>
         </label>
-        <span className="muted small" data-testid="slice-count">{slices.length} slices</span>
+        <label className="chk" title="When zoomed in, keep the playhead in view by scrolling the waveform">
+          <input type="checkbox" checked={follow} onChange={(e) => setFollow(e.target.checked)} data-testid="follow-toggle" />Follow playhead
+        </label>
+        <span className="muted small slice-count" data-testid="slice-count">{slices.length} slices</span>
       </div>
 
       <ChopControls chop={chop} setChop={setChop} onChop={() => doChop()} busy={busy} />
@@ -288,18 +294,19 @@ function Editor({ id, source }) {
       <div className="editor-body">
         <PadGrid slices={slices} bank={bank} setBank={setBank} activePads={activePads} selectedId={selectedId}
           onTrigger={triggerPad} trackId={id} options={stableOptions} />
-        <ExportPanel track={track} slices={slices} options={options} setOptions={setOptions} />
-      </div>
-
-      <div className="panel">
-        <div className="panel-title">Slices <span className="muted small">drag ⠿ into your DAW</span></div>
-        <div className="slice-list" data-testid="slice-list">
-          {slices.map((s, i) => (
-            <SliceRow key={s.id} slice={s} index={i} selected={s.id === selectedId} onSelect={setSelectedId}
-              onChange={updateSlice} onPlay={playSlice} onDelete={deleteSlice} onDownload={downloadSlice}
-              trackId={id} options={stableOptions} />
-          ))}
-          {slices.length === 0 && <div className="muted">No slices — choose a mode and hit Chop.</div>}
+        <div className="editor-side">
+          <ExportPanel track={track} slices={slices} options={options} setOptions={setOptions} />
+          <div className="panel slices-panel">
+            <div className="panel-title">Slices <span className="muted small">drag ⠿ into your DAW</span></div>
+            <div className="slice-list" data-testid="slice-list">
+              {slices.map((s, i) => (
+                <SliceRow key={s.id} slice={s} index={i} selected={s.id === selectedId} onSelect={setSelectedId}
+                  onChange={updateSlice} onPlay={playSlice} onDelete={deleteSlice} onDownload={downloadSlice}
+                  trackId={id} options={stableOptions} />
+              ))}
+              {slices.length === 0 && <div className="muted">No slices — choose a mode and hit Chop.</div>}
+            </div>
+          </div>
         </div>
       </div>
     </div>

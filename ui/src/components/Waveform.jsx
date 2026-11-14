@@ -9,6 +9,7 @@ import { gridLines } from '../lib/grid.js'
 const COLORS = ['rgba(255, 92, 57, 0.18)', 'rgba(64, 196, 255, 0.16)']
 const SELECTED = 'rgba(255, 196, 0, 0.30)'
 const LOOP = 'rgba(120, 255, 140, 0.20)'
+const TIMELINE_H = 22 // timeline plugin row under the waveform
 
 /**
  * wavesurfer 8 + Regions/Timeline/Zoom/Minimap with a beat/bar grid overlay.
@@ -16,7 +17,7 @@ const LOOP = 'rgba(120, 255, 140, 0.20)'
  */
 const Waveform = forwardRef(function Waveform(
   { audioBuffer, url, bpm, downbeat, slices, selectedId, loop, dragSelect,
-    onSliceChange, onSelect, onCreate, onLoopChange, onReady, onTime, onPlayState },
+    onSliceChange, onSelect, onCreate, onLoopChange, onReady, onTime, onPlayState, zoom = 0, follow = false },
   ref,
 ) {
   const container = useRef(null)
@@ -28,7 +29,29 @@ const Waveform = forwardRef(function Waveform(
   const pendingUser = useRef(null)
   const loopRef = useRef(loop)
   const cbs = useRef({})
+  const view = useRef({ zoom, follow })
   const [ready, setReady] = useState(false)
+  const [height, setHeight] = useState(0) // waveform px height, from the space the layout gives us
+
+  useEffect(() => { view.current = { zoom, follow } }, [zoom, follow])
+
+  // Size the waveform to its container (the editor layout decides the height, not the content).
+  useEffect(() => {
+    const el = container.current
+    if (!el || typeof ResizeObserver === 'undefined') return undefined
+    const measure = () => {
+      const h = Math.max(60, Math.floor(el.clientHeight) - TIMELINE_H)
+      setHeight((cur) => (Math.abs(cur - h) >= 2 ? h : cur))
+    }
+    const ro = new ResizeObserver(measure)
+    ro.observe(el)
+    measure()
+    return () => ro.disconnect()
+  }, [])
+  useEffect(() => { if (ready && height) ws.current?.setOptions({ height }) }, [ready, height])
+  useEffect(() => { if (ready) ws.current?.zoom(zoom) }, [ready, zoom])
+  // No automatic scrolling unless the user asked to follow the playhead.
+  useEffect(() => { if (ready) ws.current?.setOptions({ autoScroll: follow, autoCenter: follow }) }, [ready, follow])
 
   useEffect(() => { loopRef.current = loop }, [loop])
   useEffect(() => { cbs.current = { onSliceChange, onSelect, onCreate, onLoopChange, onReady, onTime, onPlayState } })
@@ -52,14 +75,17 @@ const Waveform = forwardRef(function Waveform(
     for (let c = 0; c < Math.min(2, audioBuffer.numberOfChannels); c++) peaks.push(audioBuffer.getChannelData(c))
     const w = WaveSurfer.create({
       container: container.current,
-      height: 150,
+      height: Math.max(60, (container.current.clientHeight || 172) - TIMELINE_H),
       waveColor: '#5b6475',
       progressColor: '#ff5c39',
       cursorColor: '#ffd23f',
       cursorWidth: 2,
       normalize: true,
-      minPxPerSec: 40,
-      autoScroll: true,
+      minPxPerSec: view.current.zoom,
+      fillParent: true,
+      hideScrollbar: true, // navigate with the minimap / zoom; no scrollbar appearing and vanishing
+      autoScroll: view.current.follow,
+      autoCenter: view.current.follow,
       dragToSeek: false,
       url,
       peaks,
