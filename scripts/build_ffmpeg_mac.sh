@@ -42,7 +42,8 @@ FF_PLATFORM=(--disable-x86asm)  # Linux test builds: no nasm needed
 if [ "$(uname)" = Darwin ]; then
   EXTRA_CFLAGS="$EXTRA_CFLAGS -mmacosx-version-min=$MACOS_MIN"
   EXTRA_LDFLAGS="-mmacosx-version-min=$MACOS_MIN"
-  FF_PLATFORM=(--cc=clang --arch=arm64 --target-os=darwin --enable-securetransport)
+  # iconv is in /usr/lib/libiconv on macOS (not libc), and configure doesn't add it on its own
+  FF_PLATFORM=(--cc=clang --arch=arm64 --target-os=darwin --enable-securetransport --extra-libs=-liconv)
   export MACOSX_DEPLOYMENT_TARGET=$MACOS_MIN
   # never pick up Homebrew's libraries (they don't exist on users' Macs)
   export PKG_CONFIG_PATH="$PREFIX/lib/pkgconfig" PKG_CONFIG_LIBDIR="$PREFIX/lib/pkgconfig"
