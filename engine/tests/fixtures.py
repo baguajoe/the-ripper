@@ -5,6 +5,9 @@
 Produces:
     beat_120.wav / beat_120.mp3   12 s, 120 BPM kick on every beat + A-minor pad + A1 bass
     beat_90.wav                   same at 90 BPM
+    song_126.wav                  4:00 "song", 126 BPM, E minor (i-iv-V-i), kick + chords + bass
+    song_126.mp4                  the same song as the audio of an MP4 (needs ffmpeg)
+    video_noaudio.mp4             2 s video with no audio track (needs ffmpeg)
 """
 from __future__ import annotations
 
@@ -53,7 +56,66 @@ def make_beat(bpm: float, duration: float = DURATION, sr: int = SR) -> np.ndarra
     return np.stack([mono, mono * 0.98])
 
 
-def generate(out_dir: Path = DEFAULT_DIR) -> dict[str, Path]:
+SONG_BPM = 126.0
+SONG_KEY = "Em"
+SONG_SECONDS = 240.0
+
+
+def _midi_hz(note: float) -> float:
+    return 440.0 * 2 ** ((note - 69) / 12)
+
+
+def make_song(bpm: float = SONG_BPM, duration: float = SONG_SECONDS, sr: int = SR) -> np.ndarray:
+    """A 4-minute E-minor "song": i-iv-V-i (Em Am B Em), two bars per chord, a bass line on
+    the chord roots, a melody on the tonic triad and a kick on every beat."""
+    n = int(duration * sr)
+    t = np.arange(n, dtype=np.float64) / sr
+    bar = 4 * 60.0 / bpm
+    chords = [[64, 67, 71], [69, 72, 76], [71, 75, 78], [64, 67, 71]]   # Em, Am, B, Em
+    roots = np.array([40, 45, 47, 40], dtype=float)                       # E2 A2 B2 E2
+    idx = (t // (2 * bar)).astype(int) % 4
+    out = np.zeros(n, dtype=np.float64)
+    for ci, chord in enumerate(chords):
+        m = idx == ci
+        for note in chord:
+            out[m] += 0.045 * np.sin(2 * np.pi * _midi_hz(note) * t[m])
+    bass_hz = 440.0 * 2 ** ((roots[idx] - 69) / 12)
+    out += 0.11 * np.sin(2 * np.pi * np.cumsum(bass_hz) / sr)
+    # melody: E5 G5 B5 G5 per beat (tonic arpeggio), soft
+    beat = 60.0 / bpm
+    mel = np.array([76, 79, 83, 79], dtype=float)[(t // beat).astype(int) % 4]
+    out += 0.03 * np.sin(2 * np.pi * np.cumsum(440.0 * 2 ** ((mel - 69) / 12)) / sr)
+    out = out.astype(np.float32)
+    kick = _kick(sr) * 0.8
+    k = 0
+    while k * beat < duration:
+        start = int(round(k * beat * sr))
+        end = min(n, start + len(kick))
+        out[start:end] += kick[: end - start]
+        k += 1
+    out /= max(1.0, float(np.max(np.abs(out))) / 0.9)
+    return np.stack([out, out * 0.98])
+
+
+def make_videos(out_dir: Path, song_wav: Path, ffmpeg: str) -> dict[str, Path]:
+    """song_126.mp4 (song as AAC audio + a tiny black video) and video_noaudio.mp4."""
+    paths = {}
+    mp4 = out_dir / "song_126.mp4"
+    if not mp4.exists():
+        subprocess.run([ffmpeg, "-y", "-v", "error", "-f", "lavfi", "-i", "color=c=black:s=160x120:r=5",
+                        "-i", str(song_wav), "-shortest", "-map", "0:v", "-map", "1:a",
+                        "-c:v", "mpeg4", "-q:v", "20", "-c:a", "aac", "-b:a", "160k", str(mp4)],
+                       check=True)
+    paths["mp4"] = mp4
+    silent = out_dir / "video_noaudio.mp4"
+    if not silent.exists():
+        subprocess.run([ffmpeg, "-y", "-v", "error", "-f", "lavfi", "-i", "color=c=blue:s=160x120:r=5",
+                        "-t", "2", "-an", "-c:v", "mpeg4", str(silent)], check=True)
+    paths["mp4_noaudio"] = silent
+    return paths
+
+
+def generate(out_dir: Path = DEFAULT_DIR, song: bool = True) -> dict[str, Path]:
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     paths = {}
@@ -68,6 +130,13 @@ def generate(out_dir: Path = DEFAULT_DIR) -> dict[str, Path]:
         subprocess.run([ffmpeg, "-y", "-v", "error", "-i", str(paths["wav120"]),
                         "-codec:a", "libmp3lame", "-b:a", "192k", str(mp3)], check=True)
     paths["mp3"] = mp3
+    if song:
+        sp = out_dir / "song_126.wav"
+        if not sp.exists():
+            sf.write(str(sp), make_song().T, SR, subtype="PCM_16")
+        paths["song"] = sp
+        if ffmpeg:
+            paths.update(make_videos(out_dir, sp, ffmpeg))
     bad = out_dir / "not_audio.wav"
     if not bad.exists():
         bad.write_bytes(b"this is definitely not a wav file" * 10)

@@ -47,17 +47,44 @@ def probe() -> dict:
 _probe_thread: threading.Thread | None = None
 
 
+def _probe_in_worker() -> None:
+    """Run probe() in a throw-away worker process: torch is a large native library and must
+    never be loaded into the engine's HTTP process (a crash there would take it down)."""
+    global _probe
+    from .. import workers
+    pool = workers.WorkerPool("probe", 1, keep_warm=0)
+    try:
+        result = pool.run("engine.services.pipeline:probe_ai", (), timeout=300)
+    except Exception as exc:  # crashed / timed out: AI stems are simply unavailable
+        result = {"available": False, "device": None,
+                  "reason": f"torch/demucs could not be loaded ({type(exc).__name__}: {exc})"}
+    finally:
+        pool.shutdown()
+    if _probe is None:
+        _probe = result
+
+
 def probe_nowait() -> dict | None:
-    """Like probe(), but never blocks: importing torch takes seconds, so the first call
-    starts the probe in the background and returns None ("checking")."""
+    """Engine-process view of probe(), never blocks: the first call starts the probe in a
+    worker process in the background and returns None ("checking")."""
     global _probe_thread
     if _probe is not None:
         return _probe
     with _model_lock:
         if _probe_thread is None:
-            _probe_thread = threading.Thread(target=probe, daemon=True, name="ripper-ai-probe")
+            _probe_thread = threading.Thread(target=_probe_in_worker, daemon=True, name="ripper-ai-probe")
             _probe_thread.start()
     return None
+
+
+def probe_remote(timeout: float = 300) -> dict:
+    """Engine-process view of probe(), blocking until the answer is known."""
+    if _probe is None:
+        probe_nowait()
+        t = _probe_thread
+        if t is not None:
+            t.join(timeout)
+    return _probe or {"available": False, "device": None, "reason": "Still checking for torch/demucs"}
 
 
 def pick_device() -> str:

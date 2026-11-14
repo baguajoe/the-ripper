@@ -1,15 +1,19 @@
 from __future__ import annotations
 
+import dataclasses
+import io
 import os
+import shutil
+import uuid
 from pathlib import Path
 
 from flask import Blueprint, Response, current_app, jsonify
 
-from .. import config
+from .. import config, runtime, workers
 from ..app import ApiError
-from ..services import exporter, media, pipeline, separator_ai, tools
+from ..services import exporter, media, separator_ai, tools
 from ..services.exporter import ExportOptions, Slice
-from .common import body, require_feature, require_track, state
+from .common import body, require_feature, require_track, run_quick, state
 
 bp = Blueprint("export", __name__)
 
@@ -32,6 +36,13 @@ def health():
         features={k: config.is_allowed(k, st.pro_enabled) for k in config.FEATURES},
         models={k: v["label"] for k, v in config.DEMUCS_MODELS.items()},
         max_upload_mb=config.MAX_UPLOAD_BYTES // (1024 * 1024),
+        max_video_mb=config.MAX_VIDEO_BYTES // (1024 * 1024),
+        audio_extensions=sorted(config.AUDIO_EXTENSIONS),
+        video_extensions=sorted(config.VIDEO_EXTENSIONS),
+        threads={"cpus": runtime.cpu_count(), "cap": runtime.thread_cap(),
+                 **{k: os.environ.get(k) for k in runtime.THREAD_VARS}},
+        workers={"isolated": True, "crashes": sum(p.crashes for p in workers._pools.values())},
+        started=st.started,
     )
 
 
@@ -87,24 +98,27 @@ def _slices(data: dict, duration: float) -> list[Slice]:
     return out
 
 
-def _stem_names(track: dict, data: dict) -> list[str]:
+def _stem_names(track: dict, data: dict) -> tuple[list[str], bool]:
+    """(stem names, make_dsp_stems). 'all' before any stems exist = run the fast DSP split."""
     want = data.get("stems")
     if want is None and data.get("include_stems"):
         want = "all"
     if not want:
-        return []
+        return [], False
     if want == "all":
-        if not track.get("stems"):  # no stems yet: run the fast DSP split inline
-            pipeline.run_stems(lambda *_: None, state().library, track["id"], "dsp", "dsp")
-            track.update(require_track(track["id"]))
-        return list(track["stems"]["names"])
+        if not track.get("stems"):
+            return list(DSP_STEMS), True
+        return list(track["stems"]["names"]), False
     if not isinstance(want, list):
         raise ApiError(400, "invalid_stems", "stems must be a list of names or 'all'")
     have = (track.get("stems") or {}).get("names", [])
     missing = [n for n in want if n not in have]
     if missing:
         raise ApiError(404, "not_found", f"No stem(s) {missing} — run stem separation first")
-    return want
+    return want, False
+
+
+DSP_STEMS = ("drums", "bass", "vocals", "other")
 
 
 def _gate(n_slices: int, n_stems: int, midi: bool) -> None:
@@ -116,41 +130,40 @@ def _gate(n_slices: int, n_stems: int, midi: bool) -> None:
         require_feature("single_export")
 
 
-def _build(track: dict, data: dict, kind: str | None = None, folders: bool = True):
+def _spec(track: dict, data: dict, out: dict, kind: str | None = None, folders: bool = True) -> dict:
+    """Validate an export request in the engine process; the worker only renders."""
     opts = _options(data)
     slices = _slices(data, track["duration"])
-    midi = bool(data.get("include_midi", False))
-    if kind == "midi":
-        midi = True
-    stem_names = _stem_names(track, data)
+    midi = bool(data.get("include_midi", False)) or kind == "midi"
+    stem_names, make_dsp = _stem_names(track, data)
     if kind == "midi":
         _gate(0, 0, True)
     else:
         _gate(len(slices), len(stem_names), midi)
     if not slices and not stem_names:
         raise ApiError(400, "nothing_to_export", "Add at least one slice or stem")
-
-    lib = state().library
-    d = lib.track_dir(track["id"])
-    sources: dict = {}
-    needed = {s.source for s in slices} if kind != "midi" else set()
-    for src in needed:
-        if src == "mix":
-            sources[src] = media.read_stereo(d / "source.wav")
-        else:
-            p = d / "stems" / f"{src}.wav"
-            if not p.exists():
-                raise ApiError(404, "not_found", f"No stem '{src}'")
-            sources[src] = media.read_stereo(p)
-    stems = {n: media.read_stereo(d / "stems" / f"{n}.wav") for n in stem_names}
+    have = set((track.get("stems") or {}).get("names", []))
+    for sl in slices:
+        if sl.source != "mix" and sl.source not in have:
+            raise ApiError(404, "not_found", f"No stem '{sl.source}'")
     a = track["analysis"]
-    if kind == "midi":
-        return [exporter.KitFile(
-            exporter.build_filename(track["title"], a["bpm"], a.get("key"), "slices", "mid"),
-            exporter.build_midi(slices, a["bpm"], track["title"], a.get("downbeat")))]
-    return exporter.build_kit(title=track["title"], bpm=a["bpm"], key=a.get("key"),
-                              sources=sources, slices=slices, opts=opts, stems=stems,
-                              include_midi=midi, folders=folders, downbeat=a.get("downbeat"))
+    return {"title": track["title"], "bpm": a["bpm"], "key": a.get("key"),
+            "downbeat": a.get("downbeat"), "options": dataclasses.asdict(opts),
+            "slices": [dataclasses.asdict(s) for s in slices], "stems": stem_names,
+            "make_dsp_stems": make_dsp, "include_midi": midi, "midi_only": kind == "midi",
+            "folders": folders, "out": out}
+
+
+def _render(track: dict, spec: dict) -> dict:
+    lib = state().library
+    tid = track["id"]
+
+    def on_update(fields: dict) -> None:
+        if lib.get(tid):
+            lib.update(tid, **fields)
+
+    return run_quick("engine.services.pipeline:build_files", (str(lib.track_dir(tid)), spec),
+                     "Export", on_update=on_update)
 
 
 @bp.post("/tracks/<track_id>/export")
@@ -158,15 +171,31 @@ def export(track_id: str):
     """Returns a zip (or a single WAV when `format: 'wav'` and exactly one file results)."""
     track = require_track(track_id, ready=True)
     data = body()
-    files = _build(track, data)
     a = track["analysis"]
-    if data.get("format") == "wav" and len(files) == 1:
-        f = files[0]
-        name = Path(f.arcname).name
-        mime = "audio/midi" if name.endswith(".mid") else "audio/wav"
-        return _attachment(f.data, name, mime)
-    name = f"{exporter.base_name(track['title'], a['bpm'], a.get('key'))}_Kit.zip"
-    return _attachment(exporter.zip_bytes(files), name, "application/zip")
+    tmp = Path(current_app.config["RIPPER_STORAGE"]) / ".exports" / uuid.uuid4().hex
+    single = data.get("format") == "wav"
+    out = {"kind": "dir", "dir": str(tmp)} if single else {"kind": "zip", "path": str(tmp / "kit.zip")}
+    spec = _spec(track, data, out)
+    try:
+        files = _render(track, spec)["files"]
+        if single and len(files) == 1:
+            p = Path(files[0])
+            name = p.name
+            mime = "audio/midi" if name.endswith(".mid") else "audio/wav"
+            return _attachment(p.read_bytes(), name, mime)
+        if single:  # more than one file: zip them like a normal export
+            import zipfile
+            buf = io.BytesIO()
+            with zipfile.ZipFile(buf, "w", zipfile.ZIP_STORED) as z:
+                for f in files:
+                    z.write(f, os.path.relpath(f, tmp))
+            data_bytes = buf.getvalue()
+        else:
+            data_bytes = Path(files[0]).read_bytes()
+        name = f"{exporter.base_name(track['title'], a['bpm'], a.get('key'))}_Kit.zip"
+        return _attachment(data_bytes, name, "application/zip")
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
 
 
 def _attachment(data: bytes, name: str, mime: str) -> Response:
@@ -200,9 +229,10 @@ def render(track_id: str):
     if kind == "kit":
         data = {**data, "include_midi": data.get("include_midi", True),
                 "stems": data.get("stems", "all") if data.get("stems") is not None else "all"}
-    files = _build(track, data, kind=kind, folders=bool(data.get("folders", False)))
     target = Path(dest)
     sub = data.get("subfolder")
     if isinstance(sub, str) and sub.strip():
         target = target / exporter.sanitize(sub, "Export", 80)
-    return jsonify(files=exporter.write_files(files, target))
+    spec = _spec(track, data, {"kind": "dir", "dir": str(target)}, kind=kind,
+                 folders=bool(data.get("folders", False)))
+    return jsonify(files=_render(track, spec)["files"])
