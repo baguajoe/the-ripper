@@ -176,6 +176,9 @@ def stage(text: str) -> None:
     print(f"RIPPER_ENGINE_STAGE {text}", flush=True)
 
 
+app_main_fh: list = []
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="ripper-engine")
     parser.add_argument("--port", type=int, default=0, help="0 = pick a free port")
@@ -183,10 +186,27 @@ def main(argv: list[str] | None = None) -> int:
                         help="exit when this process dies (desktop app / plugin host)")
     parser.add_argument("--new", action="store_true", help="don't reuse a running engine")
     parser.add_argument("--no-engine-json", action="store_true", help="don't write engine.json")
+    parser.add_argument("--analyze", metavar="FILE", help="analyze one file, print JSON, exit")
     args = parser.parse_args(argv)
 
     logging.basicConfig(level=logging.INFO, format="[engine] %(levelname)s %(message)s",
                         stream=sys.stderr)
+    import faulthandler
+    _fh = open(config.app_data_dir() / "engine-crash.log", "a", encoding="utf-8")
+    faulthandler.enable(file=_fh, all_threads=True)
+    app_main_fh.append(_fh)
+    if args.analyze:
+        from .services import analyzer
+        import multiprocessing, os as _os
+        log.info("cpu_count=%s env=%s", _os.cpu_count(), {k: v for k, v in _os.environ.items() if "THREADS" in k})
+        out = {}
+        def run():
+            t0 = time.time()
+            a = analyzer.analyze(Path(args.analyze), lambda p, m: log.info("%.2f %s (%.1fs)", p, m, time.time() - t0))
+            out.update(bpm=a["bpm"], key=a["key"], secs=round(time.time() - t0, 1))
+        th = threading.Thread(target=run); th.start(); th.join()
+        print(json.dumps(out), flush=True)
+        return 0
 
     stage("Checking audio tools")
     from .services import tools
