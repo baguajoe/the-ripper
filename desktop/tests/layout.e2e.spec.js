@@ -27,7 +27,18 @@ test.afterAll(async () => {
   if (dirs) fs.rmSync(dirs.root, { recursive: true, force: true })
 })
 
-const setSize = (w, h) => app.evaluate(({ BrowserWindow }, [w, h]) => BrowserWindow.getAllWindows()[0].setContentSize(w, h), [w, h])
+// Sizes are set on the page viewport (Chromium device metrics), not the OS window: CI screens
+// can be smaller than the window we ask for and the OS would clamp it.
+// 1264x749 = the content area of a 1280x800 window on Windows (title bar + menu bar).
+const SMALL = { width: 1264, height: 749 }
+const BIG = { width: 1920, height: 1040 }
+async function setSize({ width, height }) {
+  await app.evaluate(({ BrowserWindow }, [w, h]) => BrowserWindow.getAllWindows()[0].setContentSize(w, h), [width, height])
+  await win.setViewportSize({ width, height })
+  await win.waitForTimeout(700)
+  const got = await win.evaluate(() => [innerWidth, innerHeight])
+  expect(got).toEqual([width, height])
+}
 
 /** Page scroll state + the position/size of everything that could move. */
 const snapshot = () => win.evaluate(() => {
@@ -48,7 +59,7 @@ const snapshot = () => win.evaluate(() => {
 
 test('editor fits the window and nothing moves during 10 s of playback', async () => {
   const fx = fixtures()
-  await setSize(1280, 800)
+  await setSize(SMALL)
   await expect(win.getByTestId('engine-status')).toHaveAttribute('data-ok', 'true', { timeout: 180_000 })
   await win.getByTestId('file-input').setInputFiles(fx.wav120) // 12 s, so 10 s of playback fits
   const card = win.locator('[data-testid^="track-card-"]').first()
@@ -62,14 +73,12 @@ test('editor fits the window and nothing moves during 10 s of playback', async (
   // --- fits: no page scroll at 1280x800 or bigger; the waveform + pads grow instead
   const small = await snapshot()
   expect(small.overflow).toEqual({ v: 0, h: 0, docV: 0, docH: 0 })
-  await setSize(1920, 1080)
-  await win.waitForTimeout(700)
+  await setSize(BIG)
   const big = await snapshot()
   expect(big.overflow).toEqual({ v: 0, h: 0, docV: 0, docH: 0 })
   expect(big.layout['.waveform-wrap'][3]).toBeGreaterThan(small.layout['.waveform-wrap'][3])
   expect(big.layout['[data-testid=pad-0]'][3]).toBeGreaterThan(small.layout['[data-testid=pad-0]'][3])
-  await setSize(1280, 800)
-  await win.waitForTimeout(700)
+  await setSize(SMALL)
   // the slice list scrolls inside its own panel
   expect(await win.getByTestId('slice-list').evaluate((e) => e.scrollHeight > e.clientHeight)).toBe(true)
 
