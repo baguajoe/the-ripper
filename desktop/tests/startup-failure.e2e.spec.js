@@ -3,7 +3,7 @@
 const { test, expect, _electron: electron } = require('@playwright/test')
 const fs = require('node:fs')
 const path = require('node:path')
-const { ROOT, tempDirs } = require('./helpers')
+const { ROOT, tempDirs, appEnv } = require('./helpers')
 
 test('engine start-up failure shows a friendly error with diagnostics', async () => {
   const dirs = tempDirs()
@@ -11,14 +11,7 @@ test('engine start-up failure shows a friendly error with diagnostics', async ()
   const app = await electron.launch({
     ...(packaged ? { executablePath: packaged } : {}),
     args: [...(packaged ? [] : [path.join(ROOT, 'desktop')]), ...(process.platform === 'linux' ? ['--no-sandbox'] : [])],
-    env: {
-      ...process.env,
-      RIPPER_APP_DATA: dirs.appData,
-      RIPPER_STORAGE: dirs.storage,
-      RIPPER_USER_DATA: dirs.userData,
-      RIPPER_ENGINE_NEW: '1',
-      RIPPER_ENGINE_CMD: path.join(dirs.base, 'no-such-engine'), // spawn fails
-    },
+    env: appEnv(dirs, { RIPPER_ENGINE_CMD: path.join(dirs.base, 'no-such-engine') }), // spawn fails
   })
   try {
     const win = await app.firstWindow({ timeout: 60_000 })
@@ -39,6 +32,6 @@ test('engine start-up failure shows a friendly error with diagnostics', async ()
     expect(fs.existsSync(path.join(dirs.userData, 'logs', 'main.log'))).toBe(true)
   } finally {
     await app.close()
-    fs.rmSync(dirs.base, { recursive: true, force: true })
+    fs.rmSync(dirs.root, { recursive: true, force: true })
   }
 })

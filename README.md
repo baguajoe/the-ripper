@@ -1,6 +1,6 @@
 # The Ripper
 
-A desktop producer tool: drop a WAV/MP3 or paste a link → it lands on a beat grid with BPM and
+A desktop producer tool: drop a WAV/MP3 (or a video) or paste a link → it lands on a beat grid with BPM and
 key → chop it onto a 4×4 pad grid → split stems → **drag slices, stems, a whole kit or a slice-map
 MIDI file straight into your DAW**.
 
@@ -155,7 +155,7 @@ against the installed engine (MP3 import → analyze → export kit). That prove
 
 ## 6. Using it
 
-1. **Import** — paste a link and hit *Rip*, or drop WAV/MP3 files (≤ 200 MB). *Only import
+1. **Import** — paste a link and hit *Rip*, or drop WAV/MP3 files (≤ 200 MB) or videos — MP4, MOV, M4V, WEBM, MKV (≤ 500 MB; only the audio is kept) — anywhere in the window. *Only import
    content you own or have rights to.* Cards show status, BPM, key, duration and a mini waveform.
 2. **Editor** — click a card. The yellow lines are bars, faint lines beats. Fix the tempo with
    ½ / ×2 / TAP / typing, move bar 1 with ◀ ▶.
@@ -210,7 +210,12 @@ Storage: `engine/storage/` in dev (`<app-data>/TheRipper/storage` when packaged;
 
 * **Tester reports** — *Help → Copy Diagnostics* (also on the start-up error screen and in *About*)
   copies the app version, OS, which ffmpeg/ffprobe/deno/node were found and the log tails. *Help →
-  Open Log Folder* opens `<userData>/logs/` (`main.log`, `engine.log`, rotated, 10 MB max in total).
+  Open Log Folder* opens `<userData>/logs/` (`main.log`, `engine.log`, rotated, 10 MB max in total;
+  `engine-crash.log` holds stack traces from native crashes, see below).
+* **Crash isolation** — analysis, stems and export run in worker processes (`engine/workers.py`):
+  a native crash fails only that job (error + *Retry*), the engine keeps serving, and the desktop
+  app restarts the engine itself if it ever exits (max 3 times a minute). Thread pools are capped
+  at `min(cpus, 8)` and numba caches to `<app-data>/numba-cache` (`engine/runtime.py`).
 * **“ffmpeg is required”** on launch — only when neither the bundled copy nor `PATH` has it. The
   app's files are incomplete: reinstall. (Running from source: install it, §1.)
 * **YouTube links fail** — keep yt-dlp current (`pip install -U yt-dlp`) and install a JS runtime

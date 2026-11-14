@@ -4,7 +4,7 @@ import { formatDuration } from '../lib/format.js'
 
 const STATUS_LABEL = { downloading: 'Downloading', analyzing: 'Analyzing', ready: 'Ready', error: 'Error' }
 
-export default function TrackCard({ track, onDelete }) {
+export default function TrackCard({ track, onDelete, onRetry }) {
   const navigate = useNavigate()
   const a = track.analysis
   const ready = track.status === 'ready'
@@ -42,7 +42,14 @@ export default function TrackCard({ track, onDelete }) {
         </div>
       )}
       {track.status !== 'ready' && track.job?.message && track.status !== 'error' && <div className="card-sub">{track.job.message}</div>}
-      {track.status === 'error' && <div className="card-sub error-text" data-testid="track-error">{track.error}</div>}
+      {track.status === 'error' && (
+        <div className="card-sub error-text" data-testid="track-error">
+          <span>{track.error}</span>
+          {onRetry && (
+            <button className="btn btn-small" data-testid="track-retry" onClick={(e) => { e.stopPropagation(); onRetry(track) }}>Retry</button>
+          )}
+        </div>
+      )}
     </div>
   )
 }

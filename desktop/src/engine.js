@@ -5,6 +5,7 @@ const fs = require('node:fs')
 const os = require('node:os')
 const path = require('node:path')
 const readline = require('node:readline')
+const { NOISY } = require('./supervisor')
 
 const API = '/api/v1'
 
@@ -56,7 +57,6 @@ function engineCommand({ packaged, resourcesPath, repoRoot }) {
 }
 
 const START_TIMEOUT_MS = 180_000 // a cold first start on a slow Mac can take a minute or more
-const NOISY = / "GET \/api\/v1\/(jobs|tracks|health)/ // UI polling: keep out of logs
 
 class EngineManager {
   /**
@@ -64,11 +64,12 @@ class EngineManager {
    * engineLog(line): every line the engine prints (minus polling noise), for engine.log.
    * expectedVersion: only reuse an already-running engine of this version.
    */
-  constructor({ packaged, resourcesPath, repoRoot, dev, log = console, onStage = () => {}, engineLog = () => {}, expectedVersion = null }) {
-    Object.assign(this, { packaged, resourcesPath, repoRoot, dev, log, onStage, engineLog, expectedVersion })
+  constructor({ packaged, resourcesPath, repoRoot, dev, log = console, onStage = () => {}, engineLog = () => {}, expectedVersion = null, logDir = null, onExit = () => {} }) {
+    Object.assign(this, { packaged, resourcesPath, repoRoot, dev, log, onStage, engineLog, expectedVersion, logDir, onExit })
     this.child = null
     this.info = null
     this.spawned = false
+    this.gen = 0
     this.stderrTail = []
   }
 
@@ -97,9 +98,13 @@ class EngineManager {
     this.onStage('Starting the audio engine')
     const env = { ...process.env, PYTHONUNBUFFERED: '1' }
     if (this.dev) env.RIPPER_DEV = '1'
+    if (this.logDir) env.RIPPER_LOG_DIR = this.logDir // engine-crash.log (faulthandler) goes next to engine.log
     const child = spawn(cmd, fullArgs, { cwd, env, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] })
     this.child = child
     this.spawned = true
+    this.stopping = false
+    let started = false
+    const gen = (this.gen = (this.gen || 0) + 1)
 
     const ready = new Promise((resolve, reject) => {
       const fail = (code, message) => {
@@ -108,9 +113,15 @@ class EngineManager {
         reject(e)
       }
       child.on('error', (err) => fail('spawn_failed', `Could not start the audio engine (${err.message}). ${this.dev ? 'Is the Python venv set up? See README.' : ''}`))
-      child.on('exit', (code) => {
-        this.child = null
-        this.engineLog(`--- engine exited (code ${code})`)
+      child.on('exit', (code, signal) => {
+        if (this.child === child) this.child = null
+        const hex = code !== null && code > 255 ? ` = 0x${(code >>> 0).toString(16).toUpperCase()}` : ''
+        this.engineLog(`--- engine exited (code ${code}${hex}${signal ? `, ${signal}` : ''})`)
+        if (started) {
+          // After start-up: a crash or kill. Let the app restart it (unless we stopped it).
+          if (!this.stopping && gen === this.gen) this.onExit({ code, signal, pid: child.pid })
+          return
+        }
         if (code === 3) fail('ffmpeg_missing', 'ffmpeg was not found on PATH.')
         else fail('engine_exited', `The audio engine exited (code ${code}).\n${this.stderrTail.slice(-8).join('\n')}`)
       })
@@ -150,6 +161,7 @@ class EngineManager {
     for (let i = 0; i < 100; i++) {
       if (await health(info.port)) {
         this.info = info
+        started = true
         return info
       }
       await new Promise((r) => setTimeout(r, 100))
@@ -160,6 +172,7 @@ class EngineManager {
   /** Stop the engine if we spawned it: graceful /shutdown, then kill. */
   async stop() {
     const child = this.child
+    this.stopping = true
     if (!this.spawned || !child) return
     try {
       await fetch(`${this.baseUrl}${API}/shutdown`, { method: 'POST', headers: { 'X-Ripper-Token': this.info.token } })
