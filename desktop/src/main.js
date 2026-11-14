@@ -8,9 +8,10 @@ const fs = require('node:fs')
 const os = require('node:os')
 const path = require('node:path')
 const { pathToFileURL } = require('node:url')
-const { EngineManager } = require('./engine')
+const { EngineManager, health: engineHealth } = require('./engine')
 const { createLogs } = require('./logs')
 const tools = require('./tools')
+const { RestartPolicy, deElevate } = require('./supervisor')
 
 const DEV_URL = process.env.VITE_DEV_SERVER_URL || null
 const REPO_ROOT = path.resolve(__dirname, '..', '..')
@@ -25,6 +26,15 @@ protocol.registerSchemesAsPrivileged([
 ])
 
 if (process.env.RIPPER_USER_DATA) app.setPath('userData', process.env.RIPPER_USER_DATA)
+
+// Windows: if we were started elevated (e.g. "Run as administrator", or by an elevated
+// installer), Windows blocks drag-and-drop from Explorer into our window. Relaunch as the
+// normal user before doing anything else (before taking the single-instance lock).
+const elevation = deElevate({ markerFile: path.join(app.getPath('temp'), 'TheRipper-deelevate.txt') })
+if (elevation === 'relaunched') {
+  app.exit(0)
+  process.exit(0)
+}
 if (!app.requestSingleInstanceLock()) app.quit()
 
 // --- logs: <userData>/logs/{main,engine}.log, rotated, 10 MB max ----------------------------------
@@ -38,7 +48,10 @@ process.on('uncaughtException', (e) => log.error(`uncaught: ${e.stack || e}`))
 process.on('unhandledRejection', (e) => log.error(`unhandled rejection: ${e?.stack || e}`))
 
 // --- engine + start-up status (shown by the renderer's splash / error screen) ----------------------
-const status = { state: 'starting', stage: 'Starting', startedAt: Date.now(), readyAt: null, error: null }
+// state: starting -> ready; ready -> restarting (crash / hang) -> ready; any -> failed.
+// generation goes up every time a (new) engine becomes ready, so the UI knows to reconnect.
+const status = { state: 'starting', stage: 'Starting', startedAt: Date.now(), readyAt: null, error: null, generation: 0, restarts: 0, lastExit: null }
+const restartPolicy = new RestartPolicy({ max: 3, windowMs: 60_000 })
 function setStatus(patch) {
   Object.assign(status, patch)
   if (win && !win.isDestroyed()) win.webContents.send('engine:status', { ...status })
@@ -53,7 +66,10 @@ const engine = new EngineManager({
   expectedVersion: app.getVersion(),
   onStage: (stage) => setStatus({ stage }),
   engineLog: (line) => logs.engine.write(line),
+  logDir: logs.dir,
+  onExit: ({ code, signal }) => engineDown(`exited (code ${code}${code > 255 ? ` = 0x${(code >>> 0).toString(16).toUpperCase()}` : ''}${signal ? `, ${signal}` : ''})`),
 })
+globalThis.__ripperEngine = engine // e2e: the engine-kill test reads engine.child.pid
 let win = null
 let quitting = false
 let engineReady = null // Promise<info>; the window opens immediately and the UI waits on this
@@ -75,7 +91,7 @@ async function diagnostics() {
     `OS:            ${os.type()} ${os.release()} (${process.platform} ${process.arch})${os.version ? ` — ${os.version()}` : ''}`,
     `Electron:      ${process.versions.electron} (Chrome ${process.versions.chrome}, Node ${process.versions.node})`,
     `Memory:        ${(os.totalmem() / 2 ** 30).toFixed(1)} GB, ${os.cpus().length} CPUs`,
-    `Engine:        ${status.state}${status.state === 'starting' ? ` — ${status.stage} (${secs(Date.now() - status.startedAt)})` : ''}`
+    `Engine:        ${status.state}${status.restarts ? ` (auto-restarted ${status.restarts}x, last: ${status.lastExit})` : ''}${status.state === 'starting' ? ` — ${status.stage} (${secs(Date.now() - status.startedAt)})` : ''}`
       + `${status.readyAt ? ` — started in ${secs(status.readyAt - status.startedAt)}` : ''}`
       + `${engine.info ? ` — v${engine.info.version}, port ${engine.info.port}${engine.info.reused ? ', reused' : ''}` : ''}`,
     ...(status.error ? [`Engine error:  [${status.error.code}] ${status.error.message}`] : []),
@@ -92,7 +108,20 @@ async function diagnostics() {
     '',
     '--- app log (last 25 lines) ---',
     ...logs.app.tail(25),
+    '',
+    '--- engine crash traces (engine-crash.log, last 40 lines) ---',
+    ...crashTail(40),
   ].join('\n')
+}
+
+/** faulthandler output from native crashes in the engine or its workers (engine/runtime.py). */
+function crashTail(n) {
+  try {
+    const lines = fs.readFileSync(path.join(logs.dir, 'engine-crash.log'), 'utf8').split(/\r?\n/).filter((l) => l.trim())
+    return lines.length ? lines.slice(-n) : ['(none)']
+  } catch {
+    return ['(none)']
+  }
 }
 
 async function copyDiagnostics() {
@@ -208,8 +237,8 @@ function registerIpc() {
     return { baseUrl: engine.baseUrl, token: engine.info.token, version: engine.info.version }
   })
   handle('engine:status', () => ({ ...status }))
-  handle('engine:retry', () => { if (status.state === 'failed') startEngine() })
-  handle('app:info', () => ({ version: app.getVersion(), platform: process.platform, arch: process.arch, logDir: logs.dir }))
+  handle('engine:retry', () => { if (status.state === 'failed') { restartPolicy.reset(); startEngine() } })
+  handle('app:info', () => ({ version: app.getVersion(), platform: process.platform, arch: process.arch, logDir: logs.dir, elevated: elevation === 'elevated' }))
   handle('diag:copy', () => copyDiagnostics())
   handle('diag:openLogs', async () => { await openLogFolder() })
 
@@ -364,15 +393,16 @@ function buildMenu() {
 }
 
 // --- engine start-up ------------------------------------------------------------------------------
-function startEngine() {
-  setStatus({ state: 'starting', stage: 'Starting', startedAt: Date.now(), readyAt: null, error: null })
+function startEngine({ restart = false } = {}) {
+  setStatus({ state: restart ? 'restarting' : 'starting', stage: restart ? 'Restarting the audio engine' : 'Starting', startedAt: Date.now(), readyAt: null, error: null })
   log.info(`[app] The Ripper ${app.getVersion()} on ${process.platform} ${process.arch} (${os.release()}) — starting engine`)
   for (const t of Object.values(tools.findAll(toolOpts()))) if (t) log.info(`[app] found ${t.name}: ${t.path} (${t.source})`)
   const prep = app.isPackaged ? tools.prepareBundledTools({ resourcesPath: process.resourcesPath, log }) : Promise.resolve()
   engineReady = prep.then(() => engine.start())
   engineReady.then(
     (info) => {
-      setStatus({ state: 'ready', stage: 'Ready', readyAt: Date.now() })
+      setStatus({ state: 'ready', stage: 'Ready', readyAt: Date.now(), generation: status.generation + 1 })
+      healthFailures = 0
       log.info(`[app] engine ready on :${info.port} after ${((status.readyAt - status.startedAt) / 1000).toFixed(1)} s${info.reused ? ' (reused)' : ''}`)
     },
     (err) => {
@@ -389,6 +419,36 @@ function startEngine() {
   engineReady.catch(() => {}) // handled above; IPC callers get the rejection themselves
 }
 
+// --- engine supervision: restart it if it dies or stops answering -----------------------------
+let healthFailures = 0
+let restartTimer = null
+
+async function engineDown(reason) {
+  if (status.state !== 'ready' || quitting) return
+  log.error(`[engine] ${reason} — restarting it`)
+  logs.engine.write(`--- engine down: ${reason}`)
+  setStatus({ state: 'restarting', stage: 'Restarting the audio engine', lastExit: reason })
+  await engine.stop().catch(() => {}) // a hung engine is killed; a dead one is a no-op
+  if (!restartPolicy.allow()) {
+    setStatus({ state: 'failed', error: { code: 'crash_loop', message: `The audio engine stopped 3 times within a minute (last: ${reason}).` } })
+    return
+  }
+  status.restarts += 1
+  clearTimeout(restartTimer)
+  restartTimer = setTimeout(() => startEngine({ restart: true }), 500)
+}
+
+function watchEngineHealth() {
+  setInterval(async () => {
+    if (status.state !== 'ready' || !engine.info) return
+    const port = engine.info.port
+    const ok = await engineHealth(port, 2500)
+    if (status.state !== 'ready' || engine.info?.port !== port) return
+    healthFailures = ok ? 0 : healthFailures + 1
+    if (healthFailures >= 2) engineDown('stopped answering /health')
+  }, 2500).unref()
+}
+
 async function boot() {
   cleanDragRoot()
   fs.mkdirSync(DRAG_ROOT, { recursive: true })
@@ -400,6 +460,8 @@ async function boot() {
   // friendly error with "Copy diagnostics" if it fails.
   startEngine()
   createWindow()
+  watchEngineHealth()
+  if (elevation === 'elevated') log.warn('[app] running elevated (as administrator): drag-and-drop from Explorer is blocked by Windows')
 }
 
 app.whenReady().then(boot)

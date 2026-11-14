@@ -33,3 +33,20 @@ def require_track(track_id: str, ready: bool = False) -> dict:
 def require_feature(feature: str) -> None:
     if not config.is_allowed(feature, state().pro_enabled):
         raise ApiError(403, "pro_required", f"'{feature}' is a Pro feature")
+
+
+def run_quick(target: str, args: tuple, what: str, timeout: float = 600, on_update=None):
+    """Run an interactive task (export, render, onsets) in a worker and wait for it.
+
+    A crash in the worker becomes a 500 with a clear message; the engine keeps running."""
+    from .. import workers
+    try:
+        return workers.pool("quick").run(target, args, timeout=timeout, on_update=on_update)
+    except workers.WorkerCrashed as exc:
+        raise ApiError(500, "worker_crashed",
+                       f"{what} crashed in the audio engine ({exc}). Nothing else was affected - try again.")
+    except workers.TaskFailed as exc:
+        raise ApiError(422 if exc.safe else 500, "task_failed",
+                       str(exc) if exc.safe else f"{what} failed ({exc})")
+    except TimeoutError:
+        raise ApiError(504, "timeout", f"{what} took too long")

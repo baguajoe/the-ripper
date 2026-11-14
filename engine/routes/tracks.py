@@ -7,9 +7,9 @@ from flask import Blueprint, jsonify, request, send_file
 
 from .. import config
 from ..app import ApiError
-from ..services import analyzer, chopper, downloader, media, pipeline, separator_ai
+from ..services import chopper, grid, media, pipeline, separator_ai
 from ..services.library import public_track
-from .common import body, require_feature, require_track, state
+from .common import body, require_feature, require_track, run_quick, state
 
 bp = Blueprint("tracks", __name__)
 
@@ -21,18 +21,41 @@ def _with_job(track: dict) -> dict:
     return out
 
 
+def _start_import(track_id: str, target: str, *args, pool_name: str = "jobs") -> str:
+    """Run an import job in a worker; store its results on the track in this process."""
+    st = state()
+    lib = st.library
+
+    def on_done(result: dict) -> dict:
+        lib.update(track_id, status="ready", error=None, crashed=False, **result)
+        return {"track_id": track_id}
+
+    def on_error(msg: str, crashed: bool) -> None:
+        lib.update(track_id, status="error", error=msg, crashed=crashed)
+
+    job_id = st.jobs.submit("import", target, str(lib.track_dir(track_id)), *args,
+                            meta={"track_id": track_id},
+                            on_update=lambda fields: lib.update(track_id, **fields),
+                            on_done=on_done, on_error=on_error, pool_name=pool_name)
+    lib.update(track_id, job_id=job_id)
+    return job_id
+
+
 @bp.post("/tracks/link")
 def import_link():
     data = body()
     url = (data.get("url") or "").strip()
+    from ..services import downloader
     if not downloader.validate_url(url):
         raise ApiError(400, "invalid_url", "Paste a full http(s) link")
     st = state()
     track = st.library.create(title=url[:120], source="link", status="downloading", url=url)
-    job_id = st.jobs.submit("import", pipeline.process_link, st.library, track["id"], url,
-                            meta={"track_id": track["id"]})
-    st.library.update(track["id"], job_id=job_id)
+    job_id = _start_import(track["id"], "engine.services.pipeline:import_link", url)
     return jsonify(job_id=job_id, track_id=track["id"]), 202
+
+
+def _mb(n: int) -> int:
+    return n // (1024 * 1024)
 
 
 @bp.post("/tracks/upload")
@@ -42,24 +65,57 @@ def upload():
         raise ApiError(400, "no_file", "Send the audio as multipart field 'file'")
     ext = Path(f.filename).suffix.lower()
     if ext not in config.ALLOWED_EXTENSIONS:
-        raise ApiError(400, "unsupported_type", "Only WAV and MP3 files are supported")
+        raise ApiError(400, "unsupported_type",
+                       "Unsupported file type. Drop a WAV or MP3, or a video (MP4, MOV, M4V, WEBM, MKV)")
+    video = ext in config.VIDEO_EXTENSIONS
+    limit = config.max_bytes_for(ext)
+    if request.content_length and request.content_length > limit + 1024 * 1024:
+        raise ApiError(413, "file_too_large",
+                       f"Max {'video' if video else 'audio'} file size is {_mb(limit)} MB")
     st = state()
     title = Path(f.filename).stem[:120] or "Untitled"
     track = st.library.create(title=title, source="upload", status="analyzing")
+    st.library.update(track["id"], from_video=video)
     d = st.library.track_dir(track["id"])
     src = d / f"upload{ext}"
-    f.save(str(src))
-    if src.stat().st_size > config.MAX_UPLOAD_BYTES:
+    try:
+        f.save(str(src))
+        if src.stat().st_size > limit:
+            raise ApiError(413, "file_too_large",
+                           f"Max {'video' if video else 'audio'} file size is {_mb(limit)} MB")
+        info = media.inspect(src)
+        if video and info["readable"] and not info["has_audio"]:
+            raise ApiError(400, "no_audio",
+                           f"{f.filename} has no audio track - there's nothing to import")
+        if not info["readable"] or not info["has_audio"] or not info["duration"]:
+            raise ApiError(400, "invalid_audio",
+                           "That file isn't a readable video" if video else "That file isn't readable audio")
+    except ApiError:
         st.library.delete(track["id"])
-        raise ApiError(413, "file_too_large", "Max upload is 200 MB")
-    info = media.probe(src)
-    if not info or not info.get("duration"):
-        st.library.delete(track["id"])
-        raise ApiError(400, "invalid_audio", "That file isn't readable audio")
-    job_id = st.jobs.submit("import", pipeline.process_upload, st.library, track["id"], src,
-                            meta={"track_id": track["id"]})
-    st.library.update(track["id"], job_id=job_id)
+        raise
+    job_id = _start_import(track["id"], "engine.services.pipeline:import_file")
     return jsonify(job_id=job_id, track_id=track["id"]), 202
+
+
+@bp.post("/tracks/<track_id>/retry")
+def retry(track_id: str):
+    """Re-run a failed import. Uses the single-threaded 'safe' worker pool, so a retry after a
+    native crash runs with the most conservative settings."""
+    track = require_track(track_id)
+    if track.get("status") != "error":
+        raise ApiError(409, "not_failed", f"Track is {track.get('status')}")
+    d = state().library.track_dir(track_id)
+    if pipeline.pending_source(str(d)) or (d / "source.wav").exists():
+        target, args = "engine.services.pipeline:import_file", ()
+        status = "analyzing"
+    elif track.get("url"):
+        target, args = "engine.services.pipeline:import_link", (track["url"],)
+        status = "downloading"
+    else:
+        raise ApiError(409, "cannot_retry", "The original file is gone - import it again")
+    state().library.update(track_id, status=status, error=None, crashed=False)
+    job_id = _start_import(track_id, target, *args, pool_name="safe")
+    return jsonify(job_id=job_id, track_id=track_id), 202
 
 
 @bp.get("/tracks")
@@ -103,7 +159,7 @@ def regrid(track_id: str):
     title = data.get("title")
     fields = {}
     if bpm is not None or downbeat is not None:
-        fields["analysis"] = analyzer.regrid(track["analysis"], track["duration"], bpm, downbeat)
+        fields["analysis"] = grid.regrid(track["analysis"], track["duration"], bpm, downbeat)
     if isinstance(title, str) and title.strip():
         fields["title"] = title.strip()[:120]
     updated = state().library.update(track_id, **fields)
@@ -124,12 +180,16 @@ def _sensitivity() -> float:
         raise ApiError(400, "invalid_sensitivity", "sensitivity must be 0..1")
 
 
+def _onsets(track_id: str, rel: str, sensitivity: float) -> list[float]:
+    wav = state().library.track_dir(track_id) / rel
+    return run_quick("engine.services.pipeline:onsets", (str(wav), sensitivity), "Onset detection")
+
+
 @bp.get("/tracks/<track_id>/onsets")
 def onsets(track_id: str):
     require_track(track_id, ready=True)
-    y = analyzer.load_mono(state().library.track_dir(track_id) / _source_file(track_id))
     s = _sensitivity()
-    return jsonify(sensitivity=s, onsets=analyzer.detect_onsets(y, s))
+    return jsonify(sensitivity=s, onsets=_onsets(track_id, _source_file(track_id), s))
 
 
 def _source_file(track_id: str) -> str:
@@ -155,8 +215,7 @@ def slices(track_id: str):
         out = chopper.grid_slices(a["bpm"], a["downbeat"], track["duration"],
                                   chopper.GRID_DIVISIONS[div])
     elif mode == "transient":
-        y = analyzer.load_mono(state().library.track_dir(track_id) / "source.wav")
-        out = chopper.transient_slices(analyzer.detect_onsets(y, _sensitivity()), track["duration"])
+        out = chopper.transient_slices(_onsets(track_id, "source.wav", _sensitivity()), track["duration"])
     else:
         raise ApiError(400, "invalid_mode", "mode must be grid or transient")
     return jsonify(slices=out)
@@ -176,14 +235,21 @@ def start_stems(track_id: str):
             raise ApiError(400, "invalid_model", f"model must be one of {list(config.DEMUCS_MODELS)}")
         require_feature("stems_ai")
         require_feature(config.DEMUCS_MODELS[model]["pro_feature"])
-        probe = separator_ai.probe()
+        probe = separator_ai.probe_remote()
         if not probe["available"]:
             raise ApiError(409, "ai_unavailable", probe["reason"])
     else:
         raise ApiError(400, "invalid_engine", "engine must be 'ai' or 'dsp'")
     st = state()
-    job_id = st.jobs.submit("stems", pipeline.run_stems, st.library, track_id, engine, model,
-                            meta={"track_id": track_id})
+    lib = st.library
+
+    def on_done(meta: dict) -> dict:
+        if lib.get(track_id):
+            lib.update(track_id, stems=meta)
+        return meta
+
+    job_id = st.jobs.submit("stems", "engine.services.pipeline:run_stems", str(lib.track_dir(track_id)),
+                            engine, model, meta={"track_id": track_id}, on_done=on_done)
     return jsonify(job_id=job_id), 202
 
 

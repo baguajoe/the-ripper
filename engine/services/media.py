@@ -87,18 +87,59 @@ def probe(path: Path) -> dict | None:
     }
 
 
-def convert_to_wav(src: Path, dst: Path, sr: int = 44100) -> None:
-    """Decode anything ffmpeg understands to 44.1 kHz stereo 32-bit float WAV."""
+def inspect(path: Path) -> dict:
+    """{readable, has_audio, has_video, duration} - tells "not media" from "no audio track"."""
+    probe_bin = ffprobe_bin()
+    if not probe_bin:
+        raise JobError("ffprobe not available")
+    out = {"readable": False, "has_audio": False, "has_video": False, "duration": None}
+    try:
+        res = _run([probe_bin, "-v", "error", "-print_format", "json", "-show_streams",
+                    "-show_format", str(path)], timeout=60)
+        info = json.loads(res.stdout or b"{}") if res.returncode == 0 else None
+    except (subprocess.TimeoutExpired, json.JSONDecodeError):
+        info = None
+    if not info:
+        return out
+    streams = info.get("streams", [])
+    out["readable"] = bool(streams)
+    out["has_audio"] = any(s.get("codec_type") == "audio" for s in streams)
+    # cover art in an MP3 shows up as a video stream; only count real (non-attached) video
+    out["has_video"] = any(s.get("codec_type") == "video"
+                           and not (s.get("disposition") or {}).get("attached_pic") for s in streams)
+    try:
+        out["duration"] = float(info.get("format", {}).get("duration"))
+    except (TypeError, ValueError):
+        pass
+    return out
+
+
+def _decode(src: Path, dst: Path, sr: int, extra: list[str], what: str) -> None:
     exe = ffmpeg_bin()
     if not exe:
         raise JobError("ffmpeg not available")
-    tmp = dst.with_suffix(".tmp.wav")
-    res = _run([exe, "-y", "-v", "error", "-i", str(src), "-vn", "-ac", "2", "-ar", str(sr),
-                "-c:a", "pcm_f32le", str(tmp)])
+    tmp = dst.with_name(dst.stem + ".tmp.wav")
+    # Paths go to ffmpeg as separate argv entries (never through a shell), so spaces, periods
+    # and non-ASCII characters in user folders are passed through untouched.
+    res = _run([exe, "-nostdin", "-y", "-v", "error", "-i", str(src), *extra, "-vn", "-sn", "-dn",
+                "-ac", "2", "-ar", str(sr), "-c:a", "pcm_f32le", str(tmp)])
     if res.returncode != 0 or not tmp.exists():
         tmp.unlink(missing_ok=True)
-        raise JobError("Could not decode audio (ffmpeg failed)")
+        detail = (res.stderr or b"").decode("utf-8", "replace").strip().splitlines()
+        raise JobError(f"Could not {what} (ffmpeg failed{': ' + detail[-1][:200] if detail else ''})")
     tmp.replace(dst)
+
+
+def convert_to_wav(src: Path, dst: Path, sr: int = 44100) -> None:
+    """Decode anything ffmpeg understands to 44.1 kHz stereo 32-bit float WAV."""
+    _decode(src, dst, sr, ["-map", "0:a:0"], "decode audio")
+
+
+def extract_audio(video: Path, dst: Path, sr: int = 44100) -> None:
+    """First audio track of a video -> 44.1 kHz stereo WAV (the picture is dropped)."""
+    if not inspect(video)["has_audio"]:
+        raise JobError("That video has no audio track")
+    _decode(video, dst, sr, ["-map", "0:a:0"], "extract the audio from that video")
 
 
 def read_stereo(path: Path) -> tuple[np.ndarray, int]:

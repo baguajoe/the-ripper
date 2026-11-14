@@ -8,11 +8,12 @@ import TrackCard from '../components/TrackCard.jsx'
 const PENDING = new Set(['downloading', 'analyzing'])
 
 export default function Library() {
-  const { notify } = useApp()
+  const { notify, engineUp, engineGen, uploads, libraryKick } = useApp()
   const [tracks, setTracks] = useState(null)
-  const [uploads, setUploads] = useState([]) // {name, progress}
   const [linkBusy, setLinkBusy] = useState(false)
   const timer = useRef(null)
+  const engineUpRef = useRef(engineUp)
+  useEffect(() => { engineUpRef.current = engineUp }, [engineUp])
 
   const refresh = useCallback(async () => {
     try {
@@ -21,8 +22,10 @@ export default function Library() {
       return list
     } catch (e) {
       setTracks((t) => t ?? [])
-      notify(`Could not load library: ${e.message}`, 'error')
-      return []
+      // While the engine is down/restarting the status dot + banner say so; a toast only
+      // when it is up and the request still failed.
+      if (engineUpRef.current && e.error !== 'engine_down') notify(`Could not load library: ${e.message}`, 'error')
+      return null
     }
   }, [notify])
 
@@ -37,27 +40,22 @@ export default function Library() {
       clearTimeout(timer.current)
       const list = await refresh()
       if (!alive || mine !== gen) return
-      const busy = list.some((t) => PENDING.has(t.status))
-      timer.current = setTimeout(loop, busy ? 700 : 4000)
+      const busy = (list || []).some((t) => PENDING.has(t.status))
+      timer.current = setTimeout(loop, list === null ? 2000 : busy ? 700 : 4000)
     }
     kickRef.current = loop
     loop()
     return () => { alive = false; gen++; clearTimeout(timer.current) }
-  }, [refresh])
+  }, [refresh, engineGen]) // engineGen: the engine restarted -> reload right away
   const kick = useCallback(() => kickRef.current(), [])
+  useEffect(() => { if (libraryKick) kick() }, [libraryKick, kick])
 
-  const onFiles = useCallback(async (files) => {
-    for (const file of files) {
-      const entry = { id: Math.random().toString(36).slice(2), name: file.name, progress: 0 }
-      setUploads((u) => [...u, entry])
-      try {
-        await api.upload(file, (p) => setUploads((u) => u.map((x) => (x.id === entry.id ? { ...x, progress: p } : x))))
-        kick()
-      } catch (e) {
-        notify(`${file.name}: ${e.message}`, 'error')
-      } finally {
-        setUploads((u) => u.filter((x) => x.id !== entry.id))
-      }
+  const onRetry = useCallback(async (t) => {
+    try {
+      await api.retryTrack(t.id)
+      kick()
+    } catch (e) {
+      notify(e.message, 'error')
     }
   }, [kick, notify])
 
@@ -88,7 +86,7 @@ export default function Library() {
     <div className="library">
       <section className="import-row">
         <LinkBar onSubmit={onLink} busy={linkBusy} />
-        <DropZone onFiles={onFiles} onReject={(msgs) => msgs.forEach((m) => notify(m, 'error'))} />
+        <DropZone />
       </section>
       {uploads.length > 0 && (
         <div className="uploads">
@@ -103,9 +101,9 @@ export default function Library() {
       <section className="grid" data-testid="track-grid">
         {tracks === null && <div className="muted">Loading…</div>}
         {tracks?.length === 0 && uploads.length === 0 && (
-          <div className="empty" data-testid="library-empty">No tracks yet. Paste a link or drop a WAV/MP3 to start ripping.</div>
+          <div className="empty" data-testid="library-empty">No tracks yet. Paste a link, or drop a WAV, MP3 or video to start ripping.</div>
         )}
-        {tracks?.map((t) => <TrackCard key={t.id} track={t} onDelete={onDelete} />)}
+        {tracks?.map((t) => <TrackCard key={t.id} track={t} onDelete={onDelete} onRetry={onRetry} />)}
       </section>
     </div>
   )

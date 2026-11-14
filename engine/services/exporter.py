@@ -13,7 +13,6 @@ import zipfile
 from dataclasses import dataclass, field
 from pathlib import Path
 
-import librosa
 import mido
 import numpy as np
 import soundfile as sf
@@ -149,6 +148,7 @@ def render_slice(audio: np.ndarray, sr: int, sl: Slice, opts: ExportOptions, bpm
     if seg.shape[1] < length:  # loop past the end of the track: pad with silence
         seg = np.pad(seg, ((0, 0), (0, length - seg.shape[1])))
     if opts.mode != "loop" and opts.trim_silence and seg.shape[1] > 0:
+        import librosa
         _, (i0, i1) = librosa.effects.trim(seg.mean(axis=0), top_db=TRIM_TOP_DB)
         if i1 > i0:
             seg = seg[:, i0:i1]
@@ -160,6 +160,7 @@ def render_slice(audio: np.ndarray, sr: int, sl: Slice, opts: ExportOptions, bpm
     apply_fades(seg, sr, sl.fade_in, sl.fade_out)
     out_sr = int(opts.sr)
     if out_sr != sr:
+        import librosa
         seg = librosa.resample(seg, orig_sr=sr, target_sr=out_sr)
     if opts.mode == "loop":  # tempo-locked: exactly num_beats * 60/bpm * out_sr samples
         exact = int(round(num_beats * 60.0 / bpm * out_sr))
@@ -185,6 +186,7 @@ def apply_fades(seg: np.ndarray, sr: int, fade_in: float, fade_out: float) -> No
 def render_stem(audio: np.ndarray, sr: int, opts: ExportOptions, bpm: float
                 ) -> tuple[np.ndarray, int, int]:
     out_sr = int(opts.sr)
+    import librosa
     data = audio if out_sr == sr else librosa.resample(audio, orig_sr=sr, target_sr=out_sr)
     return np.clip(data, -1, 1).astype(np.float32), beats_in(audio.shape[1] / sr, bpm), out_sr
 

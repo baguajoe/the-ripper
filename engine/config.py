@@ -9,7 +9,7 @@ import os
 import sys
 from pathlib import Path
 
-ENGINE_VERSION = "1.1.0"
+ENGINE_VERSION = "1.1.1"
 API_VERSION = "v1"
 API_PREFIX = f"/api/{API_VERSION}"
 
@@ -36,6 +36,14 @@ def app_data_dir() -> Path:
     return base
 
 
+def log_dir() -> Path:
+    """Engine crash traces (engine-crash.log). The desktop app passes its own log folder."""
+    from .runtime import log_dir as _log_dir
+    d = _log_dir()
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
 def default_storage_dir() -> Path:
     override = os.environ.get("RIPPER_STORAGE")
     if override:
@@ -59,8 +67,17 @@ FEATURES = {
     "single_export": False,  # one slice or one stem
 }
 
-MAX_UPLOAD_BYTES = 200 * 1024 * 1024
-ALLOWED_EXTENSIONS = {".wav", ".mp3"}
+MAX_UPLOAD_BYTES = 200 * 1024 * 1024          # audio files
+MAX_VIDEO_BYTES = 500 * 1024 * 1024           # video files (only their audio is kept)
+AUDIO_EXTENSIONS = {".wav", ".mp3"}
+VIDEO_EXTENSIONS = {".mp4", ".mov", ".m4v", ".webm", ".mkv"}
+ALLOWED_EXTENSIONS = AUDIO_EXTENSIONS | VIDEO_EXTENSIONS
+
+
+def max_bytes_for(ext: str) -> int:
+    return MAX_VIDEO_BYTES if ext.lower() in VIDEO_EXTENSIONS else MAX_UPLOAD_BYTES
+
+
 TARGET_SR = 44100
 PURGE_AGE_SECONDS = 24 * 3600
 PURGE_INTERVAL_SECONDS = 3600

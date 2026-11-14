@@ -24,7 +24,7 @@ from flask import Flask, jsonify, request
 from flask_cors import CORS
 from werkzeug.exceptions import HTTPException, RequestEntityTooLarge
 
-from . import config
+from . import config, runtime
 from .jobs import JobRegistry
 from .services import media
 from .services.library import Library
@@ -52,7 +52,7 @@ def create_app(storage_dir: str | Path | None = None, *, pro_enabled: bool | Non
     storage = Path(storage_dir) if storage_dir else config.default_storage_dir()
     app.config.update(
         TESTING=testing,
-        MAX_CONTENT_LENGTH=config.MAX_UPLOAD_BYTES + 1024 * 1024,  # + multipart overhead
+        MAX_CONTENT_LENGTH=config.MAX_VIDEO_BYTES + 1024 * 1024,  # + multipart overhead
         RIPPER_TOKEN=token,
         RIPPER_STORAGE=str(storage),
     )
@@ -61,8 +61,13 @@ def create_app(storage_dir: str | Path | None = None, *, pro_enabled: bool | Non
     app.extensions["ripper"] = state
 
     origins = list(config.APP_ORIGINS) + (config.DEV_ORIGINS if config.DEV_MODE else [])
+    # max_age: cache preflights for 10 min instead of Chromium's 5 s default (one OPTIONS per
+    # route, not one per poll). allow_private_network: answer Chromium's Private Network
+    # Access preflight (Access-Control-Request-Private-Network) with "true" instead of
+    # flask-cors' default "false", which would block every request from the app's page.
     CORS(app, resources={r"/api/*": {"origins": origins}},
          allow_headers=["Content-Type", "X-Ripper-Token", "Range"],
+         max_age=600, allow_private_network=True,
          expose_headers=["Content-Disposition", "Content-Range", "Content-Length",
                          "Accept-Ranges", "X-Ripper-Filename"])
 
@@ -90,7 +95,8 @@ def create_app(storage_dir: str | Path | None = None, *, pro_enabled: bool | Non
     @app.errorhandler(RequestEntityTooLarge)
     def on_too_large(exc):
         return jsonify(error="file_too_large",
-                       detail=f"Max upload is {config.MAX_UPLOAD_BYTES // (1024 * 1024)} MB"), 413
+                       detail=f"Max file size is {config.MAX_UPLOAD_BYTES // (1024 * 1024)} MB for audio, "
+                              f"{config.MAX_VIDEO_BYTES // (1024 * 1024)} MB for video"), 413
 
     @app.errorhandler(HTTPException)
     def on_http(exc: HTTPException):
@@ -135,7 +141,7 @@ def engine_json_path() -> Path:
 
 def read_engine_json() -> dict | None:
     try:
-        return json.loads(engine_json_path().read_text())
+        return json.loads(engine_json_path().read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return None
 
@@ -183,10 +189,27 @@ def main(argv: list[str] | None = None) -> int:
                         help="exit when this process dies (desktop app / plugin host)")
     parser.add_argument("--new", action="store_true", help="don't reuse a running engine")
     parser.add_argument("--no-engine-json", action="store_true", help="don't write engine.json")
+    parser.add_argument("--analyze", metavar="FILE", help="analyze one file, print JSON, exit")
     args = parser.parse_args(argv)
 
     logging.basicConfig(level=logging.INFO, format="[engine] %(levelname)s %(message)s",
                         stream=sys.stderr)
+    crash_log = runtime.enable_crash_log("engine")
+    log.info("crash traces -> %s; threads capped at %s (cpus %s); numba cache %s",
+             crash_log, runtime.thread_cap(), runtime.cpu_count(), os.environ.get("NUMBA_CACHE_DIR"))
+    if args.analyze:  # diagnostics: python -m engine --analyze FILE (runs in a worker)
+        from . import workers
+        t0 = time.time()
+        try:
+            res = workers.pool("jobs").run("engine.services.pipeline:analyze_path",
+                                           (str(Path(args.analyze).resolve()),), timeout=600)
+            print(json.dumps({**res, "secs": round(time.time() - t0, 1)}), flush=True)
+            return 0
+        except Exception as exc:
+            print(json.dumps({"error": f"{type(exc).__name__}: {exc}"}), flush=True)
+            return 1
+        finally:
+            workers.shutdown_all()
 
     stage("Checking audio tools")
     from .services import tools
@@ -226,7 +249,7 @@ def main(argv: list[str] | None = None) -> int:
     if not args.no_engine_json:
         p = engine_json_path()
         tmp = p.with_suffix(".tmp")
-        tmp.write_text(json.dumps(info))
+        tmp.write_text(json.dumps(info), encoding="utf-8")
         try:
             os.chmod(tmp, 0o600)
         except OSError:
@@ -258,14 +281,17 @@ def main(argv: list[str] | None = None) -> int:
                 time.sleep(2)
         threading.Thread(target=watchdog, daemon=True, name="ripper-watchdog").start()
 
+    from . import workers
     from .services import separator_ai
-    separator_ai.probe_nowait()  # warm the torch import in the background
+    workers.pool("jobs").warm()   # spawn a job worker + import librosa now, not on first drop
+    separator_ai.probe_nowait()   # torch/demucs check, in a throw-away worker
     print("RIPPER_ENGINE_READY " + json.dumps({**info, "reused": False}), flush=True)
     log.info("listening on http://127.0.0.1:%d (storage %s)", port, app.config["RIPPER_STORAGE"])
     try:
         server.serve_forever()
     finally:
         state_of(app).jobs.shutdown()
+        workers.shutdown_all()
         current = read_engine_json()
         if current and current.get("pid") == os.getpid():
             engine_json_path().unlink(missing_ok=True)

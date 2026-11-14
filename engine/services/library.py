@@ -20,7 +20,7 @@ log = logging.getLogger("ripper.library")
 
 PUBLIC_FIELDS = (
     "id", "title", "source", "url", "created", "status", "error", "job_id",
-    "duration", "sr", "analysis", "stems",
+    "duration", "sr", "analysis", "stems", "crashed", "from_video",
 )
 
 
@@ -38,7 +38,7 @@ class Library:
             meta = d / "meta.json"
             if d.is_dir() and meta.exists():
                 try:
-                    data = json.loads(meta.read_text())
+                    data = json.loads(meta.read_text(encoding="utf-8"))
                 except (OSError, json.JSONDecodeError):
                     continue
                 # Jobs don't survive a restart: anything mid-flight is now an error.
@@ -51,7 +51,7 @@ class Library:
         d = self.track_dir(track["id"])
         d.mkdir(parents=True, exist_ok=True)
         tmp = d / "meta.json.tmp"
-        tmp.write_text(json.dumps(track))
+        tmp.write_text(json.dumps(track), encoding="utf-8")
         tmp.replace(d / "meta.json")
 
     # --- API -------------------------------------------------------------------------

@@ -9,6 +9,8 @@ from pathlib import Path
 import librosa
 import numpy as np
 
+from .grid import grid_beats, regrid  # noqa: F401 - re-exported (pure math, no librosa)
+
 ANALYSIS_SR = 22050
 HOP = 512
 PEAK_COUNT = 160
@@ -120,27 +122,27 @@ def grid_anchor(beats: np.ndarray, bpm: float, env: np.ndarray | None = None,
     return round(offset, 4)
 
 
-def grid_beats(bpm: float, downbeat: float, duration: float) -> list[float]:
-    """Grid beat times in [0, duration). Beat k = downbeat + k*60/bpm (k may be negative)."""
-    period = 60.0 / bpm
-    k0 = math.ceil((0.0 - downbeat) / period - 1e-9)
-    out = []
-    k = k0
-    while True:
-        t = downbeat + k * period
-        if t >= duration - 1e-6:
-            break
-        if t >= -1e-9:
-            out.append(math.floor(max(t, 0.0) * 1e6 + 0.5) / 1e6)  # == JS Math.round(x*1e6)/1e6
-        k += 1
-    return out
-
-
 # --- key ----------------------------------------------------------------------------------
+KEY_SR = 11025      # key detection runs on mono audio downsampled to 11.025 kHz
+KEY_NFFT = 4096     # 2.7 Hz bins: enough to separate semitones down to ~E2
+KEY_HOP = 2048      # 0.19 s frames
+
+
+def key_chroma_profile(y: np.ndarray, sr: int = ANALYSIS_SR) -> np.ndarray:
+    """Mean 12-bin chroma of the harmonic part of y, computed cheaply.
+
+    v1.1.0 ran HPSS + a constant-Q transform on the full 22 kHz signal: ~13 s and several
+    hundred MB of native buffers for a 4-minute song (the step that crashed in the field).
+    This does the same on 11 kHz mono with 0.19 s frames - ~2 s and ~20x less memory."""
+    y_k = librosa.resample(y, orig_sr=sr, target_sr=KEY_SR, res_type="soxr_hq") if sr != KEY_SR else y
+    S = np.abs(librosa.stft(y_k, n_fft=KEY_NFFT, hop_length=KEY_HOP))
+    harmonic = librosa.decompose.hpss(S, kernel_size=(17, 31), margin=4.0)[0]
+    chroma = librosa.feature.chroma_stft(S=harmonic ** 2, sr=KEY_SR, n_fft=KEY_NFFT, tuning=0.0)
+    return chroma.mean(axis=1)
+
+
 def estimate_key(y: np.ndarray, sr: int = ANALYSIS_SR) -> dict:
-    y_h = librosa.effects.harmonic(y, margin=4.0)
-    chroma = librosa.feature.chroma_cqt(y=y_h, sr=sr, hop_length=HOP)
-    profile = chroma.mean(axis=1)
+    profile = key_chroma_profile(y, sr) if len(y) else np.zeros(12)
     if not np.any(profile > 0):
         return {"key": None, "key_root": None, "key_mode": None, "key_confidence": 0.0,
                 "camelot": None}
@@ -212,16 +214,3 @@ def analyze(path: Path, progress=None) -> dict:
         "peaks": peaks(y),
         "duration": round(duration, 4),
     }
-
-
-def regrid(analysis: dict, duration: float, bpm: float | None = None,
-           downbeat: float | None = None) -> dict:
-    out = dict(analysis)
-    if bpm is not None:
-        out["bpm"] = round(float(bpm), 3)
-        out["bpm_flag"] = None
-        out["bpm_alternatives"] = [round(out["bpm"] / 2, 3), round(out["bpm"] * 2, 3)]
-    if downbeat is not None:
-        out["downbeat"] = round(float(downbeat), 4)
-    out["beats"] = grid_beats(out["bpm"], out["downbeat"], duration)
-    return out

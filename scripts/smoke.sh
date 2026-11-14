@@ -11,8 +11,16 @@ cd "$ROOT"
 PY="${RIPPER_PYTHON:-$ROOT/.venv/bin/python}"; [ -x "$PY" ] || PY=python3
 WORK="$(mktemp -d)"
 export RIPPER_APP_DATA="$WORK/appdata" RIPPER_STORAGE="$WORK/storage"
-ENGINE_PID=""
-cleanup() { [ -n "$ENGINE_PID" ] && kill "$ENGINE_PID" 2>/dev/null || true; rm -rf "$WORK"; }
+ENGINE_PID=""; BASE=""; TOKEN=""
+cleanup() {
+  # Graceful shutdown first: the engine stops its worker processes and closes its log files
+  # (on Windows an open file can't be deleted, and `kill` doesn't reach a native process tree).
+  if [ -n "$BASE" ]; then curl -fsS -X POST -H "X-Ripper-Token: $TOKEN" "$BASE/shutdown" >/dev/null 2>&1 || true; fi
+  for _ in $(seq 1 40); do [ -n "$ENGINE_PID" ] && kill -0 "$ENGINE_PID" 2>/dev/null || break; sleep 0.25; done
+  [ -n "$ENGINE_PID" ] && kill "$ENGINE_PID" 2>/dev/null || true
+  for _ in 1 2 3 4 5 6 7 8 9 10; do rm -rf "$WORK" 2>/dev/null && break; sleep 1; done
+  rm -rf "$WORK" 2>/dev/null || echo "note: could not remove $WORK (files still in use)"
+}
 trap cleanup EXIT
 
 json() { "$PY" -c "import json,sys; d=json.load(sys.stdin); print($1)"; }

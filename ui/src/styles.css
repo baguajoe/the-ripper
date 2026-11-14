@@ -199,3 +199,12 @@ input[type=range] { accent-color: var(--accent); }
 .about-grid dt { color: var(--muted); }
 .about-grid dd { margin: 0; user-select: text; overflow-wrap: anywhere; }
 .linkbar-warn { color: var(--accent-2); }
+
+/* v1.1.1: app-wide drop target, engine banners, retry */
+.drop-overlay {
+  position: fixed; inset: 0; z-index: 50; display: flex; align-items: center; justify-content: center;
+  background: rgba(14, 16, 20, 0.78); border: 3px dashed var(--accent, #ff5a1f); pointer-events: none;
+}
+.drop-overlay-inner { text-align: center; display: grid; gap: 8px; font-size: 18px; }
+.banner-warn { background: rgba(255, 176, 32, 0.12); border-bottom: 1px solid rgba(255, 176, 32, 0.4); }
+.track-card .error-text { display: flex; gap: 8px; align-items: center; justify-content: space-between; }

@@ -4,7 +4,7 @@ const fs = require('node:fs')
 const path = require('node:path')
 const JSZip = require('jszip')
 const { execFileSync } = require('node:child_process')
-const { ROOT, fixtures, inspectWav, tempDirs, python } = require('./helpers')
+const { ROOT, fixtures, inspectWav, tempDirs, appEnv, python } = require('./helpers')
 
 const APP_VERSION = require('../package.json').version
 
@@ -28,16 +28,7 @@ test.beforeAll(async () => {
   app = await electron.launch({
     ...(packaged ? { executablePath: packaged } : {}),
     args: [...(packaged ? [] : [path.join(ROOT, 'desktop')]), ...(process.platform === 'linux' ? ['--no-sandbox'] : [])],
-    env: {
-      ...process.env,
-      RIPPER_APP_DATA: dirs.appData,
-      RIPPER_STORAGE: dirs.storage,
-      RIPPER_USER_DATA: dirs.userData,
-      RIPPER_DOWNLOAD_DIR: dirs.downloads,
-      RIPPER_EXPORT_DIR: dirs.exports,
-      RIPPER_ENGINE_NEW: '1',
-      ...(REAL_OS_DRAG ? {} : { RIPPER_E2E_FAKE_OS_DRAG: '1' }),
-    },
+    env: appEnv(dirs, REAL_OS_DRAG ? {} : { RIPPER_E2E_FAKE_OS_DRAG: '1' }),
   })
   // Surface the app's (and engine's) own logs in the test output, e.g. for CI failures.
   app.process().stdout?.on('data', (d) => process.stdout.write(`[app] ${d}`))
@@ -52,7 +43,7 @@ test.beforeAll(async () => {
 
 test.afterAll(async () => {
   await app?.close()
-  if (dirs) fs.rmSync(dirs.base, { recursive: true, force: true })
+  if (dirs) fs.rmSync(dirs.root, { recursive: true, force: true })
 })
 
 /** Drag the element out of the app like a user; returns main's record of the drag. */
