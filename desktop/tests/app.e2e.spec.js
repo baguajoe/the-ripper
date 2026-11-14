@@ -111,14 +111,17 @@ test('boot → upload → analyze → chop → pads → stems → drag → expor
   await expect(card.getByTestId('track-bpm')).toHaveText('120 BPM')
   expect(['Am', 'C']).toContain((await card.getByTestId('track-key').textContent()).trim())
 
-  // --- open the editor, chop by 1 bar
+  // --- open the editor: 4 bars from the start are chopped Even 16 into bank A right away
   await card.click()
   await expect(win.getByTestId('editor')).toBeVisible()
   await expect(win.getByTestId('waveform')).toHaveAttribute('data-ready', 'true', { timeout: 30_000 })
   await expect(win.locator('.grid-bar').first()).toBeAttached()
+  await expect(win.getByTestId('slice-count')).toHaveText('16 slices')
+  await expect(win.getByTestId('selection-info')).toContainText('bar 1.1 → 5.1 · 4 bars')
+  // select the whole track, chop it by 1 bar into the current bank
+  await win.getByTestId('select-all').click()
   await win.getByTestId('chop-mode-grid').click()
-  await win.getByTestId('chop-division').selectOption('1bar')
-  await win.getByTestId('chop-apply').click()
+  await win.getByTestId('chop-division').selectOption('1bar') // re-chops at once
   await expect(win.getByTestId('slice-count')).toHaveText('6 slices')
 
   // --- transport: Space plays, the playhead moves, Space pauses
@@ -147,15 +150,29 @@ test('boot → upload → analyze → chop → pads → stems → drag → expor
   expect(info).toMatchObject({ sr: 44100, channels: 2, subtype: 'PCM_24' })
   expect(info.acid.bpm).toBeCloseTo(120, 3)
 
-  // --- Fast (DSP) stems
+  // --- Fast (no AI) stems: exactly drums / bass / music
   await win.getByTestId('open-stems').click()
   await expect(win.getByTestId('stems-screen')).toBeVisible()
+  // HQ (AI) is a one-click add-on now: no pip instructions anywhere
+  await expect(win.getByTestId('stems-screen')).not.toContainText('pip install')
+  // without the add-on, the one-click card shows (a dev checkout with torch has HQ (AI) already)
+  await expect(win.getByTestId('addon-card').or(win.getByTestId('ai-device'))).toBeVisible()
   await win.getByTestId('engine-dsp').check()
+  await expect(win.getByTestId('stems-estimate')).toContainText('Estimated time')
   await win.getByTestId('stems-run').click()
   await expect(win.getByTestId('stem-mixer')).toBeVisible({ timeout: 120_000 })
-  for (const s of ['drums', 'bass', 'vocals', 'other']) await expect(win.getByTestId(`stem-${s}`)).toBeVisible()
-  await expect(win.getByTestId('stems-label')).toContainText('Fast mode')
+  await expect(win.locator('[data-testid^="stem-drag-"]')).toHaveCount(3)
+  for (const s of ['drums', 'bass', 'music']) await expect(win.getByTestId(`stem-${s}`)).toBeVisible()
+  await expect(win.getByTestId('stems-label')).toContainText('Fast (no AI) — for vocals use HQ (AI)')
   await expect(win.getByTestId('stems-play')).toBeEnabled({ timeout: 30_000 })
+  // clicking a stem's name auditions it alone; clicking again brings everything back
+  await win.getByTestId('stem-name-bass').click()
+  await expect(win.getByTestId('stems-play')).toContainText('Stop')
+  await expect(win.getByTestId('stem-drums')).toHaveClass(/stem-muted/)
+  await expect(win.getByTestId('stem-bass')).not.toHaveClass(/stem-muted/)
+  await win.getByTestId('stem-name-bass').click()
+  await expect(win.getByTestId('stem-drums')).not.toHaveClass(/stem-muted/)
+  await win.getByTestId('stems-play').click()
 
   // stem drag renders a real file too
   const stemDrag = await nativeDrag('stem-drag-drums')
@@ -173,13 +190,13 @@ test('boot → upload → analyze → chop → pads → stems → drag → expor
   const names = Object.keys(zip.files).filter((n) => !zip.files[n].dir)
   expect(names.filter((n) => n.startsWith('Slices/') && n.endsWith('.wav'))).toHaveLength(6)
   expect(names.filter((n) => n.startsWith('Stems/') && n.endsWith('.wav')).sort().map((n) => n.split('_').pop()))
-    .toEqual(['bass.wav', 'drums.wav', 'other.wav', 'vocals.wav'])
+    .toEqual(['bass.wav', 'drums.wav', 'music.wav'])
   expect(names.filter((n) => n.endsWith('.mid'))).toHaveLength(1)
 
   // --- kit drag uses multi-file drag
   const kit = await nativeDrag('drag-kit')
   expect(kit.spec.kind).toBe('kit')
-  expect(kit.files.length).toBe(6 + 4 + 1)
+  expect(kit.files.length).toBe(6 + 3 + 1)
   expect(kit.files.filter((f) => f.endsWith('.mid'))).toHaveLength(1)
 
   const midi = await nativeDrag('drag-midi')

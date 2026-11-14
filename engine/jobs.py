@@ -18,6 +18,7 @@ class JobError(Exception):
 CRASH_MESSAGE = {
     "import": "Analysis crashed in the audio engine ({why}). Nothing else was affected - click Retry.",
     "stems": "Stem separation crashed in the audio engine ({why}). Nothing else was affected - try again.",
+    "addon": "The add-on download stopped unexpectedly ({why}). Click Get HQ (AI) stems again to resume.",
 }
 
 

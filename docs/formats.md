@@ -103,34 +103,73 @@ value = `max|y|` in the bucket, normalised by the largest bucket, rounded to 3 d
 
 ## 3. Slicing
 
-`MIN_SLICE = 0.05` s. Rounding `round6(x) = floor(x·1e6 + 0.5)/1e6` (half-up, same as JS
-`Math.round(x·1e6)/1e6`).
+`MIN_SLICE = 0.05` s — no slice is ever shorter. Rounding `round6(x) = floor(x·1e6 + 0.5)/1e6`
+(half-up, same as JS `Math.round(x·1e6)/1e6`). `half_beat = 30/bpm`.
 
-**Bounds → slices** (shared by every mode):
+### 3.1 Whole track (engine API, `GET /tracks/<id>/slices?mode=grid|transient`)
 
 ```
 bounds = sorted(b for b in bounds if 0 ≤ b < duration)
 clean  = drop any bound closer than MIN_SLICE to the previous kept bound
-if clean is empty or clean[0] > MIN_SLICE: insert 0 at front    (lead-in / pickup slice)
-else: clean[0] = 0                                              (tiny lead-in snapped to 0)
+if clean is empty or clean[0] > lead_min: insert 0 at front   (lead-in / pickup slice)
+else: clean[0] = 0                                             (short lead-in merged into slice01)
 if duration − clean[-1] < MIN_SLICE and len(clean) > 1: drop clean[-1]   (tiny tail merged)
 append duration
 slice i = [round6(clean[i]), round6(clean[i+1])], name "slice%02d" % (i+1)
 ```
 
+`lead_min = max(MIN_SLICE, half_beat)` for grid slices (a pickup shorter than half a beat, e.g.
+a 0.1 s gap before the first downbeat, merges into slice01), `MIN_SLICE` for transients.
+
 **Grid** — division in beats: `1/4 = 0.25`, `1/2 = 0.5`, `1 = 1`, `1 bar = 4`, `2 bars = 8`,
 `4 bars = 16`. `step = division·60/bpm`; bounds = `downbeat + n·step` for
 `n ≥ ceil((0−downbeat)/step − 1e-9)` while `< duration`.
-⇒ 1-bar slices of a track whose grid starts at ~0 = `ceil(beats/4)`.
 
-**Transients** — bounds = onset times (§2.5).
+### 3.2 A selection (the editor's Chop; API: add `start=&end=`)
+
+The editor chops a **selection** `[start, end)`, never the whole song unless *All* is selected.
+With no selection, Chop takes 4 bars from the bar line at (or before) the playhead; a bar that
+would start before 0 s starts at the first bar line instead. Drag-selections snap to the grid.
+
+```
+region(bounds): clean = [start] + interior bounds (start < b < end, each ≥ MIN_SLICE after the last kept)
+                if end − clean[-1] < MIN_SLICE: drop it
+                if clean[1] ≤ first_downbeat + 1e-6 and clean[1] − clean[0] < half_beat:
+                    drop clean[1]                (a pickup fragment before bar 1 merges)
+                append end
+first_downbeat = downbeat − floor(downbeat/bar + 1e-9)·bar      (first bar line ≥ 0)
+```
+
+| Mode | Boundaries |
+|---|---|
+| **Even N** (8 / 16 / 32) | `N' = min(N, floor(len/MIN_SLICE + 1e-9))` equal slices: `start + i·len/N'` (last ends exactly at `end`) |
+| **Grid** (1/4 beat … 1 bar) | grid points `downbeat + n·step` in `[start, end)` → `region()` |
+| **Transients** (cap, default 16) | onsets in `[start+MIN_SLICE, end−MIN_SLICE]`, strongest first (ties: earlier), each ≥ MIN_SLICE from those kept, at most `cap − 1` of them → `region()` |
+
+Onset strength = the normalised onset envelope at the onset's peak frame (`GET /onsets` returns
+`onsets` and `strengths`).
+
+**Pad banks.** 8 banks (A–H) × 16 pads. A chop goes into the bank you're on if it's empty,
+else the next empty bank(s); a chop of more than 16 slices fills consecutive banks; *Replace
+current bank* chops into the current one. Each bank remembers the chop that made it (region +
+settings); changing the mode or size re-chops that chop in place. Every chop, slice edit and
+bank change is one undo step (Ctrl/Cmd+Z, Ctrl/Cmd+Shift+Z). Banks C–H are Pro.
 
 **Manual** — `S` (Manual mode only) splits the slice containing the playhead `t` if
-`start + MIN_SLICE < t < end − MIN_SLICE`; drag on the waveform adds a slice.
-Default-named slices are renumbered in time order; custom names are kept.
+`start + MIN_SLICE < t < end − MIN_SLICE`; dragging on the waveform adds a slice.
+Default-named slices are renumbered `slice01…` in time order within their bank; custom names
+are kept.
 
 **Snap** — `snap(t) = clamp(downbeat + round((t − downbeat)/step)·step, 0, duration)` with the
-snap division (default 1 beat). Applied to region edits, manual splits and drag-selections.
+snap division (default 1 beat). Applied to selections, region edits, manual splits and drags.
+
+### 3.3 Pads
+
+Per bank: **Mono** (default) — a pad cuts whatever that bank is playing; **Poly** — pads ring
+out. Choked pads cut each other in any bank. A cut pins the voice's envelope at the cut time
+and ramps it to 0 over 5 ms (`CUT_FADE`), then stops it, so the old voice is silent within
+~6 ms. Pad mode **One-shot** plays the slice to its end; **Note-on** plays while the pad (or
+key) is held. Esc / Stop fades out everything.
 
 ## 4. Slice rendering (export, drag, pads)
 
@@ -233,28 +272,47 @@ MIDI/<base>_slices.mid
 
 Drag-outs and folder exports use the same names; drags are flat (no subfolders).
 
-## 8. Fast (DSP) stems
+## 8. Fast (no AI) stems
+
+Two modes; both only promise what DSP can do. UI label: *"Fast (no AI) — for vocals use HQ (AI)"*.
+
+**`dsp` → drums / bass / music**
 
 | Parameter | Value |
 |---|---|
 | STFT | n_fft 4096, hop 1024, Hann, at 44.1 kHz |
 | Masks | computed on the mono mix, applied to each channel's STFT |
 | HPSS | `hpss(D_mono, margin=2.0)` (kernel 31); `mask_P = |P|/|D|`, `mask_H = |H|/|D|`, residual `= clip(1 − mask_H − mask_P, 0, 1)` |
-| REPET-SIM | `S = |H|`; width = `time_to_frames(2.0 s)` = 86 frames; k = 20 nearest frames by cosine similarity of `log1p(mel128(S²))`, excluding `|i−j| < width`; `S_f = min(S, median over the k neighbours)` |
-| Vocal mask | `softmask(S − S_f, 10·S_f, power=2)` |
-| Stems | drums = `mask_P·D`; vocals = `mask_H·mask_v·D`; background = `mask_H·(1−mask_v)·D` |
-| Bass | 8th-order Butterworth low-pass, 150 Hz, `sosfiltfilt` on background |
-| Other | background − bass + residual |
+| Drums | `mask_P·D` |
+| Bass | 8th-order Butterworth low-pass, 150 Hz, `sosfiltfilt` on the harmonic part `mask_H·D` |
+| Music | harmonic − bass + residual (vocals stay in here) |
 
-The four stems sum back to the mix (max error ≈ 2e-7). Label in UI: *“Fast mode — expect bleed”*.
+The three stems sum back to the mix (max error ≈ 2e-7).
 
-## 9. HQ (AI) stems — Demucs 4.1.0
+**`center_cancel` → instrumental** (mid/side vocal removal): `mid = (L+R)/2`, `side = (L−R)/2`,
+`low = lowpass₈(mid, 120 Hz)`; output `L' = low + side`, `R' = low − side`. Removes whatever is
+mixed dead centre above 120 Hz (usually the lead vocal); keeps the stereo sides and the low end.
 
-Models: `htdemucs` (4), `htdemucs_6s` (6: + guitar, piano), `htdemucs_ft` (best, ~4× slower),
+## 9. HQ (AI) stems — Demucs 4.1.0 (the HQ (AI) add-on)
+
+Models: `htdemucs` (4: drums, bass, other, vocals), `htdemucs_6s` (6: + guitar, piano),
 `two_stem` = `htdemucs` with everything except vocals summed into `instrumental`.
-Device: `cuda` → `mps` → `cpu` (override `RIPPER_TORCH_DEVICE`); on a device error it retries on CPU.
-Input normalised `(x − mean)/std` of the mono reference, `apply_model(split=True, overlap=0.25)`,
-then de-normalised. Models are loaded once and cached; one separation runs at a time.
+
+Separation never runs inside the engine: it runs `ripper_ai.py` in the add-on's own Python
+(`<app-data>/TheRipper/addons/ai/runtime/`, or the engine's Python in a dev checkout with
+torch installed) and reads JSON-line progress from it. Device: `cuda` → `mps` → `cpu` (override
+`RIPPER_TORCH_DEVICE`); on a device error it retries on the CPU. Input normalised
+`(x − mean)/std` of the mono reference, `apply_model(split=True, overlap=0.25)`, de-normalised.
+Weights are read from `addons/ai/models/` only (`<model>.yaml` + `<sig>.safetensors`).
+
+**Add-on.** A release asset per platform (`ripper-ai-<version>-{win-cpu,win-cuda,mac-arm64}.zip.NNN`,
+parts < 2 GiB) listed in `ripper-ai-manifest.json` with sizes + SHA-256. Install = download
+(HTTP Range resume, retries, per-part and whole-zip SHA-256) → fetch the weights from the
+author's Hugging Face repos (pinned commits + SHA-256, never redistributed by us) → unzip
+(executable bits kept, no paths outside the folder) → self-test (`ripper_ai.py probe`) → swap in.
+Variant: Windows with an NVIDIA GPU (`nvidia-smi -L`) → `win-cuda`, other Windows → `win-cpu`,
+Apple Silicon → `mac-arm64`. **Estimate** = `startup + rtf·duration`, defaults per device,
+replaced by this machine's measured speed after the first run (`addons/ai/timings.json`).
 
 ## 10. Engine discovery (desktop app ⇄ plugin)
 

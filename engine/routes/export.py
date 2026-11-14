@@ -21,8 +21,8 @@ bp = Blueprint("export", __name__)
 @bp.get("/health")
 def health():
     st = state()
-    ai = separator_ai.probe_nowait() or {"available": None, "device": None,
-                                         "reason": "Checking for torch/demucs…"}
+    ai = separator_ai.probe_nowait() or {"available": None, "device": None, "gpu": None,
+                                         "reason": "Checking for the HQ (AI) engine…"}
     return jsonify(
         ok=True,
         version=config.ENGINE_VERSION,
@@ -32,9 +32,11 @@ def health():
         demucs_available=ai["available"],
         demucs_reason=ai["reason"],
         device=ai["device"],
+        gpu=ai.get("gpu"),
         pro=st.pro_enabled,
         features={k: config.is_allowed(k, st.pro_enabled) for k in config.FEATURES},
         models={k: v["label"] for k, v in config.DEMUCS_MODELS.items()},
+        fast_models={k: v["label"] for k, v in config.FAST_MODES.items()},
         max_upload_mb=config.MAX_UPLOAD_BYTES // (1024 * 1024),
         max_video_mb=config.MAX_VIDEO_BYTES // (1024 * 1024),
         audio_extensions=sorted(config.AUDIO_EXTENSIONS),

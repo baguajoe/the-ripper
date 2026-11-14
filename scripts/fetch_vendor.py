@@ -1,7 +1,11 @@
-"""Download the third-party programs the installers ship, into desktop/vendor/:
+"""Put the third-party programs the installers ship into desktop/vendor/:
 
-    desktop/vendor/ffmpeg/<os>/  ffmpeg, ffprobe, LICENSE.txt, BUILD-INFO.txt
+    desktop/vendor/ffmpeg/<os>/  ffmpeg, ffprobe, LICENSE.txt, BUILD-INFO.txt (+ SOURCE.txt on macOS)
     desktop/vendor/deno/<os>/    deno, LICENSE.md, BUILD-INFO.txt
+
+Windows ffmpeg: BtbN's LGPL static build (downloaded). macOS arm64 ffmpeg: built from source,
+LGPL, by scripts/build_ffmpeg_mac.sh (into build/ffmpeg-mac, or RIPPER_MAC_FFMPEG_DIR; built
+now if it isn't there). Deno: the official release.
 
     python scripts/fetch_vendor.py            # for this machine (win or mac)
     python scripts/fetch_vendor.py --check    # also fail unless the binaries run here
@@ -32,11 +36,9 @@ DENO_VERSION = "2.9.8"
 # Windows x64: BtbN/FFmpeg-Builds (linked from ffmpeg.org), LGPL static build of the 9.0 branch.
 BTBN = "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest"
 WIN_FFMPEG_ZIP = "ffmpeg-n9.0-latest-win64-lgpl-9.0.zip"
-# macOS arm64: Martin Riedl's static, signed + notarized builds (linked from ffmpeg.org).
-# No LGPL static macOS arm64 build is published anywhere we could find, so this one is GPLv3.
-RIEDL = "https://ffmpeg.martin-riedl.de"
-MAC_FFMPEG_RELEASE = "/download/macos/arm64/1789931890_9.0.2"
-MAC_FFMPEG_LATEST = "/redirect/latest/macos/arm64/release"
+# macOS arm64: no LGPL static build is published anywhere, so we build one from source
+# (scripts/build_ffmpeg_mac.sh; CI caches it).
+MAC_FFMPEG_BUILD = Path(os.environ.get("RIPPER_MAC_FFMPEG_DIR") or ROOT / "build" / "ffmpeg-mac")
 
 DENO = f"https://github.com/denoland/deno/releases/download/v{DENO_VERSION}"
 DENO_TARGET = {"win": "x86_64-pc-windows-msvc", "mac": "aarch64-apple-darwin"}
@@ -140,19 +142,15 @@ def ffmpeg_win(dest: Path) -> dict:
 
 
 def ffmpeg_mac(dest: Path) -> dict:
-    info = {"publisher": "Martin Riedl, ffmpeg.martin-riedl.de (macOS arm64 static, release)"}
-    for name in ("ffmpeg", "ffprobe"):
-        try:
-            data, final = fetch(f"{RIEDL}{MAC_FFMPEG_RELEASE}/{name}.zip")
-            sums, _ = fetch(f"{RIEDL}{MAC_FFMPEG_RELEASE}/{name}.zip.sha256")
-        except OSError:  # the pinned release was pruned: take the newest release build
-            data, final = fetch(f"{RIEDL}{MAC_FFMPEG_LATEST}/{name}.zip")
-            sums, _ = fetch(final + ".sha256")
-        expect_sha(data, sums.decode(), f"{name}.zip")
-        extract(data, name, dest / name)
-        info[f"{name}_source"] = final
-        info[f"{name}_sha256"] = sha256(data)
-    return info
+    src = MAC_FFMPEG_BUILD
+    if not (src / "ffmpeg").exists() or not (src / "ffprobe").exists():
+        log(f"no LGPL build in {src}: building it (scripts/build_ffmpeg_mac.sh)")
+        subprocess.run(["bash", str(ROOT / "scripts" / "build_ffmpeg_mac.sh"), str(src)], check=True)
+    for name in ("ffmpeg", "ffprobe", "LICENSE.txt", "SOURCE.txt"):
+        shutil.copy2(src / name, dest / name)
+    source = (src / "SOURCE.txt").read_text(encoding="utf-8").splitlines()
+    return {"publisher": "built from source by scripts/build_ffmpeg_mac.sh (static, LGPL, system libraries only)",
+            "source": source[0] if source else "", "lame": source[2] if len(source) > 2 else ""}
 
 
 # --- deno -----------------------------------------------------------------------------------
@@ -197,11 +195,11 @@ def main() -> int:
     version = out.splitlines()[0]
     configuration = next((l for l in out.splitlines() if l.startswith("configuration:")), "")
     lic = ffmpeg_license(configuration)
-    # The (L)GPLv3 notice must travel with the binaries. LGPLv3 is a set of additions to the
-    # GPLv3, so the GPLv3 text ships in both cases. Riedl's zips carry no licence file.
-    shutil.copyfile(ROOT / "licenses" / "GPL-3.0.txt", ff_dir / "GPL-3.0.txt")
-    if osk == "mac":
-        shutil.copyfile(ROOT / "licenses" / "GPL-3.0.txt", ff_dir / "LICENSE.txt")
+    # The licence travels with the binaries. Windows (BtbN) is LGPLv3, which is written as
+    # additions to the GPLv3, so the GPLv3 text ships too. macOS is LGPL v2.1 (its LICENSE.txt
+    # is COPYING.LGPLv2.1 from the FFmpeg source it was built from).
+    if lic.startswith("LGPL-3"):
+        shutil.copyfile(ROOT / "licenses" / "GPL-3.0.txt", ff_dir / "GPL-3.0.txt")
     write_info(ff_dir / "BUILD-INFO.txt", {"version": version, "license": lic, **ff_info,
                                            "configuration": configuration.removeprefix("configuration: ")})
     deno_version = run_version(bins[2], "--version").splitlines()[0]
@@ -212,8 +210,12 @@ def main() -> int:
         log(f"{b.relative_to(ROOT)}  {b.stat().st_size / 1e6:.1f} MB")
     log(f"ffmpeg: {version}  [{lic}]")
     log(f"deno:   {deno_version}  [MIT]")
-    if args.check and osk == "win" and lic.startswith("GPL"):
-        raise SystemExit("expected an LGPL ffmpeg build for Windows")
+    if args.check and not lic.startswith("LGPL"):
+        raise SystemExit(f"expected an LGPL ffmpeg build, got {lic}: {configuration}")
+    if args.check:
+        license_text = run_version(bins[0], "-hide_banner", "-L")
+        if "GNU Lesser General Public License" not in " ".join(license_text.split()):
+            raise SystemExit("ffmpeg -L does not report the LGPL")
     gh_out = os.environ.get("GITHUB_STEP_SUMMARY")
     if gh_out:
         with open(gh_out, "a", encoding="utf-8") as f:

@@ -66,23 +66,22 @@ npm install
 The desktop shell finds the engine's Python at `.venv/` automatically (override with
 `RIPPER_PYTHON=/path/to/python`).
 
-### Optional: HQ (AI) stems — Demucs
+### HQ (AI) stems — the HQ (AI) add-on
 
-```bash
-pip install -r engine/requirements-ai.txt        # torch + torchaudio + demucs 4.1.0
-```
+Users get HQ (AI) stems with one click: **Stems → Get HQ (AI) stems** downloads the add-on for
+their computer (size shown up front, progress bar, resumes after a failure, SHA-256 checked,
+**Remove** button) into `<app-data>/TheRipper/addons/ai/`, and HQ (AI) appears without a restart.
 
-* **NVIDIA GPU (Windows/Linux):** install the CUDA build of torch first, e.g.
-  `pip install torch torchaudio --index-url https://download.pytorch.org/whl/cu128`, then
-  `pip install demucs==4.1.0`. The app shows `device: cuda`.
-* **Apple Silicon:** the default wheels support Metal; the app shows `device: mps`
-  (unsupported ops fall back to CPU automatically).
-* **CPU only:** works everywhere but is slow — measured: `htdemucs` took 29 s for a 12 s clip
-  on a 2-core VM (including model load). Faster CPUs scale roughly with cores; `htdemucs_ft`
-  runs 4 models and takes about 4× as long. A GPU is strongly recommended for full songs.
-* The first run of each model downloads its weights (~80–320 MB) to the torch cache.
-* Without torch/demucs the HQ option is hidden and a setup hint is shown; Fast (DSP) stems
-  always work.
+* The add-on **runtime** (a private Python + torch + Demucs 4.1) is built per platform in CI by
+  `scripts/build_ai_pack.py` and attached to the GitHub release: `win-cuda` (Windows + NVIDIA,
+  CUDA 12.8, RTX 20–50 series), `win-cpu`, `mac-arm64` (Apple Silicon, Metal).
+* The **model weights** are fetched from the Demucs author's Hugging Face repos, pinned and
+  checked; we don't redistribute them. Their licence is unclear (see [LICENSES.md](LICENSES.md)).
+* Separation runs `engine/ai_runner/ripper_ai.py` in the add-on's Python, never in the engine.
+* The app shows an estimated processing time before separating; it learns this machine's speed.
+* **From source (dev):** if the engine's own Python has torch + Demucs, it is used without the
+  add-on: `pip install -r engine/requirements-ai.txt` (developers only; users never see this).
+  Measured on a 2-core VM: a 10 s clip takes ~18 s per model on the CPU.
 
 ## 3. Run the desktop app (dev mode, hot reload)
 
@@ -97,7 +96,7 @@ for changes in `desktop/src` or `engine/`.
 ## 4. Tests
 
 ```bash
-npm run test:engine     # pytest: analysis, slicing, DSP + Demucs stems, export, every API route, link import
+npm run test:engine     # pytest: analysis, slicing, Fast + Demucs stems, the AI add-on installer, export, every API route, link import
 npm run test:ui         # vitest: grid math, pad keys, filenames, JS<->Python parity vectors
 npm run test:desktop    # node --test: desktop tool resolver + log rotation
 npm run lint            # eslint (ui) + syntax check (desktop)
@@ -108,8 +107,11 @@ bash scripts/smoke.sh   # engine-only smoke: health → upload → poll → kit 
 
 * Fixtures are generated in code (`npm run fixtures`): 12 s 120 BPM kick + A-minor pad + A1 bass
   (WAV + MP3), and a 90 BPM version.
-* The Demucs test is skipped (not failed) when torch/demucs isn't installed; the link-import
+* The Demucs tests are skipped (not failed) when torch/demucs isn't installed; the link-import
   tests are skipped when the network blocks them. Override the URL with `RIPPER_TEST_URL`.
+* `desktop/tests/addon.e2e.spec.js` installs the HQ (AI) add-on in the app and separates with
+  it; it runs when `RIPPER_E2E_AI_MANIFEST` points at a served add-on manifest (CI does this).
+  Build one with `python scripts/build_ai_pack.py build --variant linux-cpu --selftest` (needs `uv`).
 * On Linux the e2e performs a **real** X11 drag-and-drop (via XTest; needs `python-xlib`, in
   `engine/requirements.txt`). On macOS/Windows it exercises everything up to the OS drag call.
 * `RIPPER_E2E_EXECUTABLE=desktop/release/linux-unpacked/the-ripper npx playwright test` (in
@@ -132,11 +134,10 @@ Each runs: `vite build` → `python scripts/build_engine.py` (PyInstaller onedir
 
 * **PyInstaller needs a Python with a shared libpython** (python.org installers, Homebrew, `uv`
   and pyenv with `--enable-shared` are fine; some minimal Docker/static builds are not).
-* **AI stems in installers:** the default engine build excludes torch (~300 MB+ CPU, multi-GB CUDA).
-  `python scripts/build_engine.py --with-ai` bundles them.
-* **Bundled tools:** `npm run vendor` (`scripts/fetch_vendor.py`) downloads checksummed builds:
-  ffmpeg + ffprobe (Windows: BtbN LGPL static; macOS arm64: Martin Riedl static, GPLv3) and
-  Deno 2.9.8 (MIT). electron-builder copies them next to `ripper-engine` and their licences to
+* **AI stems are not in the installers:** they're the separate HQ (AI) add-on (above).
+* **Bundled tools:** `npm run vendor` (`scripts/fetch_vendor.py`) puts checksummed tools in place:
+  ffmpeg + ffprobe (Windows: BtbN LGPL static; macOS arm64: **built from source, LGPL**, by
+  `scripts/build_ffmpeg_mac.sh` — about 10 minutes, cached in CI) and Deno 2.9.8 (MIT). electron-builder copies them next to `ripper-engine` and their licences to
   `resources/licenses/`. **See [LICENSES.md](LICENSES.md).** On macOS the app clears quarantine on
   its own helpers at launch, so a downloaded `.dmg` works.
 * **Signing:** set the usual electron-builder variables (`CSC_LINK`, `CSC_KEY_PASSWORD`,
@@ -146,12 +147,16 @@ Each runs: `vite build` → `python scripts/build_engine.py` (PyInstaller onedir
 ### CI
 
 `.github/workflows/ci.yml` runs lint, build, pytest, vitest, the Electron e2e and the smoke test on
-Ubuntu, Windows and macOS (Demucs on Ubuntu only), then builds the Windows `.exe` and macOS `.dmg`
-installers (unsigned) with the bundled tools and attaches them to the run as downloadable artifacts.
-It then **installs each installer** (silent NSIS install on Windows, dmg mount + copy to
-`/Applications` on macOS, with quarantine applied to the helpers). With ffmpeg, ffprobe, node and
-deno removed from `PATH`, it runs the Electron e2e against the installed app and a smoke test
-against the installed engine (MP3 import → analyze → export kit). That proves a clean machine works.
+Ubuntu, Windows and macOS (Demucs on Ubuntu only). It builds the HQ (AI) add-on for `win-cpu`,
+`win-cuda` and `mac-arm64` (each self-tested with 4/6/2 stems, cached), then builds the Windows
+`.exe` and macOS `.dmg` installers (unsigned; the macOS LGPL ffmpeg is built from source and
+cached) and attaches them to the run as artifacts. It then **installs each installer** (silent
+NSIS install on Windows, dmg mount + copy to `/Applications` on macOS, with quarantine applied to
+the helpers). With ffmpeg, ffprobe, node and deno removed from `PATH`, it runs every Electron
+e2e against the installed app — including installing the HQ (AI) add-on built in the same run,
+separating a 10 s clip with 4 and 6 stems and removing it — checks the macOS ffmpeg is LGPL, and
+smoke-tests the installed engine. A `v*` tag publishes the release with both installers, their
+zips, the add-on parts and `ripper-ai-manifest.json`.
 
 ## 6. Using it
 
@@ -159,16 +164,27 @@ against the installed engine (MP3 import → analyze → export kit). That prove
    content you own or have rights to.* Cards show status, BPM, key, duration and a mini waveform.
 2. **Editor** — click a card. The yellow lines are bars, faint lines beats. Fix the tempo with
    ½ / ×2 / TAP / typing, move bar 1 with ◀ ▶.
-3. **Chop** — Grid (¼ beat … 4 bars), Transients (sensitivity slider) or Manual (`S` at the
-   playhead, or drag on the waveform). Snap on/off. Drag slice edges to adjust.
-4. **Pads** — keys `1234 / QWER / ASDF / ZXCV` (`S` is pad 10 except in Manual mode), banks for
-   > 16 slices. Per slice: rename, reverse, gain, fades, choke.
-5. **Stems** — HQ (AI) or Fast (DSP); solo/mute/volume; download; *Send to Chop Editor*.
-6. **To the DAW** — drag any pad, slice handle `⠿`, stem, the **KIT** chip (all files) or the
+3. **Select** — drag on the waveform (snaps to the grid), or click a bar number and shift-click
+   another; or *From playhead: 1 / 2 / 4 / 8* bars; *All* for the whole track.
+4. **Chop** — chops only the selection (none: 4 bars from the playhead) into the next empty pad
+   bank (or *Replace current bank*): Even 8/16/32, Grid (¼ beat … 1 bar), Transients (max 16 by
+   default, sensitivity slider) or Manual (`S` at the playhead, or drag). Changing the mode or
+   size re-chops right away; Ctrl/Cmd+Z / Ctrl/Cmd+Shift+Z undo / redo any chop, slice edit or
+   bank change. Nothing is shorter than 50 ms; a pickup shorter than half a beat before bar 1
+   merges into the first slice.
+5. **Pads** — like an MPC: 8 banks (A–H) of 16, keys `1234 / QWER / ASDF / ZXCV` (`S` is pad 10
+   except in Manual mode). Per bank *Mono (chops cut each other)* (default) or Poly; *Choke all /
+   Unchoke all*. Per pad: One-shot / Note-on (plays while held), rename, reverse, gain, fades,
+   choke. `Esc` or *Stop* stops everything.
+6. **Stems** — HQ (AI) (free add-on: 4 stems, 6 stems, vocals/instrumental; estimated time shown)
+   or Fast (no AI): Drums / Bass / Music, or Instrumental (center cancel). Click a stem's name to
+   hear it alone; solo/mute/volume; download; *Send to Chop Editor*.
+7. **To the DAW** — the current bank is the kit: drag any pad, slice handle `⠿`, stem, the **KIT** chip (all files) or the
    **MIDI** chip straight into FL Studio / Ableton / Logic / Studio One / MPC or the desktop. Or
    *Export Kit (.zip)* (saved to Downloads), *Slices → folder…*, *Kit → folder…* (remembered).
 
-Shortcuts: `Space` play/pause · `L` loop (selected slice or 1 bar) · `Esc` stop pads.
+Shortcuts: `Space` play/pause · `L` loop (selected slice, the selection or 1 bar) · `Esc` stop
+everything · `Ctrl/Cmd+Z` undo · `Ctrl/Cmd+Shift+Z` redo.
 
 Every WAV is 24-bit, 44.1/48 kHz, named `{track}_{bpm}bpm_{key}_{slice##|stem}.wav`, with an
 ACID tempo chunk so DAWs pick up the BPM. Details: [docs/formats.md](docs/formats.md).
@@ -176,9 +192,9 @@ ACID tempo chunk so DAWs pick up the BPM. Details: [docs/formats.md](docs/format
 ## 7. Free vs Pro
 
 `engine/config.py`: `PRO_ENABLED` (env `RIPPER_PRO`, default **on**) and the `FEATURES` table.
-Pro = HQ (AI) stems, 6-stem model, batch export (more than one slice), Export Kit (zip/folder/
-drag with stems and/or MIDI). Free = everything else (import, analysis, chopping, pads, Fast
-stems, single slice / single stem export and drag). The API returns `403 {"error":
+Pro = pad banks C–H, batch export (more than one slice), Export Kit (zip/folder/drag with stems
+and/or MIDI). Free = everything else (import, analysis, chopping into banks A–B, pads, **HQ (AI)
+stems (all models, for now)**, Fast stems, single slice / single stem export and drag). The API returns `403 {"error":
 "pro_required"}` and the UI shows a PRO tag on locked buttons.
 
 ## 8. Engine API (`/api/v1`, 127.0.0.1 only)
@@ -196,8 +212,11 @@ All routes except `/health` need `X-Ripper-Token` (see docs/formats.md §10). Er
 | GET | `/tracks/<id>/audio` | 44.1 kHz WAV, HTTP Range (206) |
 | PATCH | `/tracks/<id>` `{bpm, downbeat, title}` | re-grid |
 | DELETE | `/tracks/<id>` | |
-| GET | `/tracks/<id>/onsets?sensitivity=` · `/tracks/<id>/slices?mode=grid&division=1bar` | |
-| POST | `/tracks/<id>/stems` `{engine: "ai"\|"dsp", model}` | `202 {job_id}` |
+| GET | `/tracks/<id>/onsets?sensitivity=` | `{onsets, strengths}` |
+| GET | `/tracks/<id>/slices?mode=grid&division=1bar` · add `start=&end=` for a selection (`mode=even&count=16`, `grid`, `transient&cap=16`) | |
+| POST | `/tracks/<id>/stems` `{engine: "ai"\|"dsp", model}` (ai: `htdemucs`, `htdemucs_6s`, `two_stem`; dsp: `dsp`, `center_cancel`) | `202 {job_id}` |
+| GET | `/tracks/<id>/stems/estimate?engine=&model=` | `{seconds, device, learned}` |
+| GET · POST · DELETE | `/addons/ai` · `/addons/ai/install` · `/addons/ai` | HQ (AI) add-on status (sizes) · install (`202 {job_id}`) · remove |
 | GET | `/tracks/<id>/stems` · `/tracks/<id>/stems/<name>` | |
 | POST | `/tracks/<id>/export` `{slices, stems, mode, sr, normalize, trim_silence, include_stems, include_midi, format}` | zip (or one WAV with `format: "wav"`) |
 | POST | `/tracks/<id>/render` `{kind, dest_dir, …}` | writes files to a local folder (drag/folder export) |

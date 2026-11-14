@@ -5,6 +5,8 @@
 Produces:
     beat_120.wav / beat_120.mp3   12 s, 120 BPM kick on every beat + A-minor pad + A1 bass
     beat_90.wav                   same at 90 BPM
+    beat_128.wav                  same at 128 BPM (selection-chopping tests)
+    clip_10s.wav                  the first 10 s of beat_120 (HQ (AI) add-on test)
     song_126.wav                  4:00 "song", 126 BPM, E minor (i-iv-V-i), kick + chords + bass
     song_126.mp4                  the same song as the audio of an MP4 (needs ffmpeg)
     video_noaudio.mp4             2 s video with no audio track (needs ffmpeg)
@@ -119,11 +121,15 @@ def generate(out_dir: Path = DEFAULT_DIR, song: bool = True) -> dict[str, Path]:
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     paths = {}
-    for bpm in (120, 90):
+    for bpm in (120, 90, 128):
         p = out_dir / f"beat_{bpm}.wav"
         if not p.exists():
             sf.write(str(p), make_beat(bpm).T, SR, subtype="PCM_16")
         paths[f"wav{bpm}"] = p
+    clip = out_dir / "clip_10s.wav"
+    if not clip.exists():
+        sf.write(str(clip), make_beat(120, duration=10.0).T, SR, subtype="PCM_16")
+    paths["clip10"] = clip
     mp3 = out_dir / "beat_120.mp3"
     ffmpeg = media.ffmpeg_bin()
     if not mp3.exists() and ffmpeg:

@@ -8,7 +8,8 @@ export default function SliceRow({ slice, index, selected, onSelect, onChange, o
   const drag = useNativeDrag(getSpec)
   const set = (patch) => onChange(slice.id, patch)
   return (
-    <div className={`slice-row ${selected ? 'slice-row-selected' : ''}`} data-testid={`slice-row-${index}`} onClick={() => onSelect(slice.id)}>
+    <div className={`slice-row ${selected ? 'slice-row-selected' : ''}`} data-testid={`slice-row-${index}`}
+      data-start={slice.start} data-end={slice.end} data-padmode={slice.padMode || 'oneshot'} onClick={() => onSelect(slice.id)}>
       <span className="drag-handle" title="Drag this slice into your DAW" data-testid={`slice-drag-${index}`} {...drag}>⠿</span>
       <button className="icon-btn" onClick={(e) => { e.stopPropagation(); onPlay(slice) }} data-testid={`slice-play-${index}`} title="Play">▶</button>
       <span className="slice-idx">{index + 1}</span>
@@ -26,6 +27,11 @@ export default function SliceRow({ slice, index, selected, onSelect, onChange, o
         <input type="number" className="input input-num" step="1" min="0" value={Math.round((slice.fadeOut ?? 0) * 1000)}
           onChange={(e) => set({ fadeOut: Math.max(0, Number(e.target.value)) / 1000 })} data-testid={`slice-fadeout-${index}`} />ms</label>
       <label className="chk" title="Choke: a choked pad cuts off other choked pads"><input type="checkbox" checked={!!slice.choke} onChange={(e) => set({ choke: e.target.checked })} data-testid={`slice-choke-${index}`} />Choke</label>
+      <select className="input input-mode" value={slice.padMode || 'oneshot'} onChange={(e) => set({ padMode: e.target.value })}
+        onClick={(e) => e.stopPropagation()} data-testid={`slice-padmode-${index}`} title="One-shot: plays to the end. Note-on: plays while the pad is held.">
+        <option value="oneshot">One-shot</option>
+        <option value="noteon">Note-on</option>
+      </select>
       <button className="icon-btn" onClick={(e) => { e.stopPropagation(); onDownload(slice) }} title="Save WAV" data-testid={`slice-download-${index}`}>⤓</button>
       <button className="icon-btn" onClick={(e) => { e.stopPropagation(); onDelete(slice.id) }} title="Remove slice" data-testid={`slice-delete-${index}`}>✕</button>
     </div>

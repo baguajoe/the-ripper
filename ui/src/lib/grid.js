@@ -1,7 +1,9 @@
 // Grid + slice math. Mirrors engine/services/chopper.py and analyzer.grid_beats exactly;
 // spec in docs/formats.md (#grid, #slicing). Times are seconds.
 
-export const MIN_SLICE = 0.05
+export const MIN_SLICE = 0.05 // no slice is ever shorter than this
+export const MAX_TRANSIENTS = 16 // default cap for transient chops inside a selection
+export const EVEN_COUNTS = [8, 16, 32]
 
 export const DIVISIONS = [
   { id: '1/4', label: '1/4 beat', beats: 0.25 },
@@ -42,32 +44,45 @@ export function gridLines(bpm, downbeat, duration) {
   return out
 }
 
-function boundsToSlices(bounds, duration) {
+const sliceName = (i) => `slice${String(i + 1).padStart(2, '0')}`
+export const halfBeat = (bpm) => (bpm > 0 ? 30 / bpm : MIN_SLICE)
+
+function toSlices(clean) {
+  const out = []
+  for (let i = 0; i < clean.length - 1; i++) out.push({ start: round6(clean[i]), end: round6(clean[i + 1]), name: sliceName(i) })
+  return out
+}
+
+/** Whole-track slices from boundaries: a lead-in shorter than leadMin merges into slice01,
+ *  a tail shorter than MIN_SLICE into the last slice. */
+function boundsToSlices(bounds, duration, leadMin = MIN_SLICE) {
   const sorted = bounds.filter((b) => b >= 0 && b < duration).sort((a, b) => a - b)
   const clean = []
   for (const b of sorted) if (!clean.length || b - clean[clean.length - 1] >= MIN_SLICE) clean.push(b)
-  if (!clean.length || clean[0] > MIN_SLICE) clean.unshift(0)
+  if (!clean.length || clean[0] > leadMin) clean.unshift(0)
   else clean[0] = 0
   if (duration - clean[clean.length - 1] < MIN_SLICE && clean.length > 1) clean.pop()
   clean.push(duration)
+  return toSlices(clean)
+}
+
+/** Grid times downbeat + n*step in [start, end). */
+function gridPoints(bpm, downbeat, start, end, division) {
+  const step = (division * 60) / bpm
   const out = []
-  for (let i = 0; i < clean.length - 1; i++) {
-    out.push({ start: round6(clean[i]), end: round6(clean[i + 1]), name: `slice${String(i + 1).padStart(2, '0')}` })
+  for (let n = Math.ceil((start - downbeat) / step - 1e-9); ; n++) {
+    const t = downbeat + n * step
+    if (t >= end) break
+    out.push(t)
   }
   return out
 }
 
-/** Slices every `division` beats anchored on the downbeat (+ a lead-in slice if > MIN_SLICE). */
+/** Whole-track slices every `division` beats anchored on the downbeat. A lead-in before the
+ *  first grid line shorter than half a beat is merged into slice01. */
 export function gridSlices(bpm, downbeat, duration, division) {
   if (!(bpm > 0) || !(division > 0) || !(duration > 0)) return []
-  const step = (division * 60) / bpm
-  const bounds = []
-  for (let n = Math.ceil((0 - downbeat) / step - 1e-9); ; n++) {
-    const t = downbeat + n * step
-    if (t >= duration) break
-    bounds.push(t)
-  }
-  return boundsToSlices(bounds, duration)
+  return boundsToSlices(gridPoints(bpm, downbeat, 0, duration, division), duration, Math.max(MIN_SLICE, halfBeat(bpm)))
 }
 
 export function transientSlices(onsets, duration) {
@@ -106,4 +121,65 @@ export function shiftDownbeat(downbeat, bpm, nBeats) {
   const beat = 60 / bpm
   const bar = 4 * beat
   return round6((((downbeat + nBeats * beat) % bar) + bar) % bar)
+}
+
+// --- chopping a selection (mirrors engine/services/chopper.py) --------------------------------
+
+/** Time of the first bar line at or after 0 s. */
+export function firstDownbeat(bpm, downbeat) {
+  if (!(bpm > 0)) return 0
+  const bar = 240 / bpm
+  return downbeat - Math.floor(downbeat / bar + 1e-9) * bar
+}
+
+/** Slices of [start, end) from interior boundaries: none shorter than MIN_SLICE, and a first
+ *  slice before the track's first downbeat shorter than half a beat is merged into the next. */
+function regionSlices(bounds, start, end, bpm = 0, downbeat = 0) {
+  const inner = bounds.filter((b) => start < b && b < end).sort((a, b) => a - b)
+  const clean = [start]
+  for (const b of inner) if (b - clean[clean.length - 1] >= MIN_SLICE) clean.push(b)
+  if (clean.length > 1 && end - clean[clean.length - 1] < MIN_SLICE) clean.pop()
+  if (bpm > 0 && clean.length > 1) {
+    const [a, b] = clean
+    if (b <= firstDownbeat(bpm, downbeat) + 1e-6 && b - a < halfBeat(bpm)) clean.splice(1, 1)
+  }
+  clean.push(end)
+  return toSlices(clean)
+}
+
+/** `count` equal slices of [start, end) (fewer if they'd be shorter than MIN_SLICE). */
+export function evenSlices(start, end, count) {
+  const length = end - start
+  if (!(length > 0) || !(count > 0)) return []
+  const n = Math.max(1, Math.min(Math.trunc(count), Math.floor(length / MIN_SLICE + 1e-9)))
+  const step = length / n
+  return Array.from({ length: n }, (_, i) => ({
+    start: round6(start + i * step), end: round6(i === n - 1 ? end : start + (i + 1) * step), name: sliceName(i),
+  }))
+}
+
+export function selectionGridSlices(bpm, downbeat, start, end, division) {
+  if (!(bpm > 0) || !(division > 0) || !(end - start > 0)) return []
+  return regionSlices(gridPoints(bpm, downbeat, start, end, division), start, end, bpm, downbeat)
+}
+
+/** At most `cap` slices from the strongest onsets inside [start, end); start is a boundary. */
+export function selectionTransientSlices(onsets, strengths, start, end, cap = MAX_TRANSIENTS, bpm = 0, downbeat = 0) {
+  if (!(end - start > 0)) return []
+  const st = strengths ?? onsets.map(() => 1)
+  const cand = onsets.map((t, i) => [t, st[i]]).filter(([t]) => start + MIN_SLICE <= t && t <= end - MIN_SLICE)
+  cand.sort((a, b) => (b[1] - a[1]) || (a[0] - b[0])) // strongest first
+  const kept = []
+  for (const [t] of cand) {
+    if (kept.length >= Math.max(0, Math.trunc(cap) - 1)) break
+    if (kept.every((k) => Math.abs(t - k) >= MIN_SLICE)) kept.push(t)
+  }
+  return regionSlices(kept, start, end, bpm, downbeat)
+}
+
+export function selectionSlices(mode, start, end, { bpm = 0, downbeat = 0, count = 16, division_beats: division = 1, onsets = [], strengths = null, cap = MAX_TRANSIENTS } = {}) {
+  if (mode === 'even') return evenSlices(start, end, count)
+  if (mode === 'grid') return selectionGridSlices(bpm, downbeat, start, end, division)
+  if (mode === 'transients') return selectionTransientSlices(onsets, strengths, start, end, cap, bpm, downbeat)
+  throw new Error(`unknown mode ${mode}`)
 }

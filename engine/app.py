@@ -110,11 +110,13 @@ def create_app(storage_dir: str | Path | None = None, *, pro_enabled: bool | Non
 
     from .routes import export as export_routes
     from .routes import jobs as job_routes
+    from .routes import addons as addon_routes
     from .routes import tracks as track_routes
 
     app.register_blueprint(track_routes.bp, url_prefix=config.API_PREFIX)
     app.register_blueprint(job_routes.bp, url_prefix=config.API_PREFIX)
     app.register_blueprint(export_routes.bp, url_prefix=config.API_PREFIX)
+    app.register_blueprint(addon_routes.bp, url_prefix=config.API_PREFIX)
 
     if purge:
         state.library.purge(config.PURGE_AGE_SECONDS)
@@ -284,7 +286,7 @@ def main(argv: list[str] | None = None) -> int:
     from . import workers
     from .services import separator_ai
     workers.pool("jobs").warm()   # spawn a job worker + import librosa now, not on first drop
-    separator_ai.probe_nowait()   # torch/demucs check, in a throw-away worker
+    separator_ai.probe_nowait()   # HQ (AI) add-on check (runs the add-on's own Python once)
     print("RIPPER_ENGINE_READY " + json.dumps({**info, "reused": False}), flush=True)
     log.info("listening on http://127.0.0.1:%d (storage %s)", port, app.config["RIPPER_STORAGE"])
     try:

@@ -66,8 +66,8 @@ test('editor fits the window and nothing moves during 10 s of playback', async (
   await expect(card).toHaveAttribute('data-status', 'ready', { timeout: 120_000 })
   await card.click()
   await expect(win.getByTestId('waveform')).toHaveAttribute('data-ready', 'true', { timeout: 60_000 })
-  await win.getByTestId('chop-division').selectOption('1/2') // 24 slices: a scrolling slice list
-  await win.getByTestId('chop-apply').click()
+  // the editor opens with 4 bars chopped Even 16 into bank A: 16 slices, a scrolling slice list
+  await expect(win.getByTestId('slice-count')).toHaveText('16 slices')
   await win.waitForTimeout(500)
 
   // --- fits: no page scroll at 1280x800 or bigger; the waveform + pads grow instead

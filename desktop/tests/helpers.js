@@ -18,6 +18,8 @@ function fixtures() {
   return {
     wav120: path.join(dir, 'beat_120.wav'),
     mp3: path.join(dir, 'beat_120.mp3'),
+    wav128: path.join(dir, 'beat_128.wav'), // 12 s, 128 BPM
+    clip10: path.join(dir, 'clip_10s.wav'), // 10 s, 120 BPM
     song: path.join(dir, 'song_126.wav'), // 4:00, 126 BPM, E minor
     mp4: path.join(dir, 'song_126.mp4'), // the same song as an MP4's audio
     mp4NoAudio: path.join(dir, 'video_noaudio.mp4'),

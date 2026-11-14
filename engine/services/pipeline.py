@@ -78,43 +78,50 @@ def import_link(ctx, track_dir: str, url: str) -> dict:
 
 
 def run_stems(ctx, track_dir: str, engine: str, model: str) -> dict:
+    """engine "ai": Demucs (model = config.DEMUCS_MODELS key), via the HQ (AI) add-on.
+    engine "dsp": Fast (no AI), model "dsp" (drums/bass/music) or "center_cancel" (instrumental)."""
     import numpy as np
     import soundfile as sf
 
     from . import media, separator_ai, separator_dsp
 
     d = Path(track_dir)
-    ctx.progress(0.02, "Loading audio")
-    audio, sr = media.read_stereo(d / "source.wav")
-    if engine == "ai":
-        stems, device = separator_ai.separate(audio, sr, model, ctx.progress)
-        label = config.DEMUCS_MODELS[model]["label"]
-    else:
-        stems = separator_dsp.separate(audio, sr, ctx.progress)
-        device, label = "cpu", "Fast mode — expect bleed"
     out = d / "stems"
     tmp = d / "stems.tmp"
     shutil.rmtree(tmp, ignore_errors=True)
-    tmp.mkdir()
-    for name, data in stems.items():
-        sf.write(str(tmp / f"{name}.wav"), np.asarray(data, dtype=np.float32).T, sr,
-                 subtype="FLOAT")
+    if engine == "ai":
+        res = separator_ai.separate_file(d / "source.wav", tmp, model, ctx.progress)
+        names, device = list(res["stems"]), res.get("device", "cpu")
+        label = f"HQ (AI) · {config.DEMUCS_MODELS[model]['label']}"
+    else:
+        model = model if model in separator_dsp.MODES else "dsp"
+        ctx.progress(0.02, "Loading audio")
+        audio, sr = media.read_stereo(d / "source.wav")
+        stems = separator_dsp.separate(audio, sr, ctx.progress, mode=model)
+        tmp.mkdir()
+        for name, data in stems.items():
+            sf.write(str(tmp / f"{name}.wav"), np.asarray(data, dtype=np.float32).T, sr, subtype="FLOAT")
+        names, device, label = list(stems.keys()), "cpu", separator_dsp.MODES[model]["label"]
     shutil.rmtree(out, ignore_errors=True)
     tmp.replace(out)
-    return {"engine": engine, "model": model if engine == "ai" else "dsp", "device": device,
-            "label": label, "names": list(stems.keys())}
+    return {"engine": engine, "model": model, "device": device, "label": label, "names": names}
 
 
-def probe_ai(ctx) -> dict:
-    """torch/demucs availability, probed in a worker so torch never loads in the HTTP process."""
-    from . import separator_ai
-    return separator_ai.probe()
+def install_ai_addon(ctx, manifest_url: str | None = None) -> dict:
+    from . import addon
+    return addon.install(ctx, manifest_url)
 
 
 # --- interactive tasks (the 'quick' pool) ----------------------------------------------------
 def onsets(ctx, wav: str, sensitivity: float) -> list[float]:
     from . import analyzer
     return analyzer.detect_onsets(analyzer.load_mono(Path(wav)), sensitivity)
+
+
+def onsets_strength(ctx, wav: str, sensitivity: float) -> dict:
+    from . import analyzer
+    times, strengths = analyzer.detect_onsets_with_strength(analyzer.load_mono(Path(wav)), sensitivity)
+    return {"onsets": times, "strengths": strengths}
 
 
 def build_files(ctx, track_dir: str, spec: dict) -> dict:

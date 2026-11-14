@@ -217,11 +217,11 @@ input[type=range] { accent-color: var(--accent); }
 .content:has(> .editor) { overflow: clip; display: flex; flex-direction: column; padding: 14px 18px; }
 .editor {
   flex: 1; min-height: 0; min-width: 0; gap: 10px;
-  grid-template-rows: auto minmax(130px, 1fr) auto auto minmax(300px, 1.7fr);
+  grid-template-rows: auto minmax(100px, 1fr) auto auto auto minmax(260px, 1.7fr);
   grid-template-columns: minmax(0, 1fr);
 }
-.editor-head, .transport, .chop-controls { flex-wrap: nowrap; min-width: 0; }
-.editor-head > *, .transport > *, .chop-controls > * { flex-shrink: 0; }
+.editor-head, .transport, .chop-controls, .selection-bar { flex-wrap: nowrap; min-width: 0; }
+.editor-head > *, .transport > *, .chop-controls > *, .selection-bar > * { flex-shrink: 0; }
 .editor-head .editor-title { flex: 1 1 auto; min-width: 80px; }
 .waveform-wrap { min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
 .waveform { flex: 1 1 0; min-height: 0; overflow: hidden; }
@@ -242,7 +242,7 @@ input[type=range] { accent-color: var(--accent); }
 .editor-side .export-panel { flex: none; }
 .slices-panel { flex: 1 1 0; min-height: 0; grid-template-rows: auto minmax(0, 1fr); }
 .slices-panel .slice-list { max-height: none; min-height: 0; overflow: auto; align-content: start; }
-.editor .padgrid-wrap { min-height: 0; grid-template-rows: auto minmax(0, 1fr); }
+.editor .padgrid-wrap { min-height: 0; grid-template-rows: auto auto minmax(0, 1fr); }
 .editor .padgrid { grid-template-rows: repeat(4, minmax(0, 1fr)); min-height: 0; }
 .editor .pad { aspect-ratio: auto; min-height: 0; }
 .editor .bank-row .muted { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; flex: 1 1 0; }
@@ -250,10 +250,34 @@ input[type=range] { accent-color: var(--accent); }
 /* Small windows: let the page scroll instead of squeezing everything. */
 @media (max-width: 1099px), (max-height: 639px) {
   .content:has(> .editor) { overflow: auto; display: block; }
-  .editor { grid-template-rows: auto 220px auto auto auto; }
-  .editor-head, .transport, .chop-controls { flex-wrap: wrap; }
+  .editor { grid-template-rows: auto 220px auto auto auto auto; }
+  .editor-head, .transport, .chop-controls, .selection-bar { flex-wrap: wrap; }
   .editor .editor-body { grid-template-columns: 1fr; }
   .editor .pad { aspect-ratio: 5 / 3; min-height: 64px; }
   .editor .padgrid { grid-template-rows: none; }
   .slices-panel .slice-list { max-height: 340px; }
 }
+
+/* --- v1.1.3: selection, banks, pads like an MPC ---------------------------------------------- */
+.selection-bar { display: flex; align-items: center; gap: 8px; padding: 3px 12px; background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); }
+.selection-bar .seg-btn { padding: 3px 10px; }
+.selection-bar .btn-small { padding-top: 3px; padding-bottom: 3px; }
+.editor .bank-row .btn-small { padding-top: 4px; padding-bottom: 4px; }
+.sel-label { font-size: 12px; font-weight: 600; color: rgb(110, 180, 255); }
+.sel-info { font-size: 12px; font-variant-numeric: tabular-nums; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1 1 auto !important; flex-shrink: 1 !important; }
+.selection-bar .bank-info { white-space: nowrap; }
+.bank-btn { min-width: 30px; justify-content: center; position: relative; }
+.bank-btn.bank-full::after { content: ''; position: absolute; left: 50%; bottom: 2px; width: 4px; height: 4px; margin-left: -2px; border-radius: 50%; background: var(--accent); }
+.bank-btn .badge-pro-lock { margin-left: 3px; font-size: 8px; padding: 0 3px; }
+.bank-opts { gap: 8px; }
+.pad-flag-hold { top: auto; bottom: 6px; right: 8px; color: var(--accent); }
+.input-mode { width: auto; padding: 3px 4px; font-size: 11px; }
+.num-3 { display: inline-block; width: 4ch; text-align: right; font-variant-numeric: tabular-nums; }
+.chop-controls .btn-primary { min-width: 120px; justify-content: center; }
+.addon-card { display: grid; gap: 8px; margin: 10px 0; padding: 12px; border: 1px dashed var(--accent-2); border-radius: var(--radius); background: rgba(255, 210, 63, 0.04); }
+.addon-card.addon-installed { display: flex; align-items: center; justify-content: space-between; border-style: solid; border-color: var(--line); background: none; padding: 6px 12px; }
+.badge-free { color: var(--good, #5bd68a); border-color: rgba(91, 214, 138, 0.5); }
+.engine-locked { opacity: 0.85; }
+.stem-name { background: none; border: none; color: var(--text); font: inherit; font-weight: 600; cursor: pointer; padding: 2px 6px; border-radius: 6px; min-width: 96px; text-align: left; }
+.stem-name:hover { background: var(--panel-2); }
+.stem-name-solo { color: var(--accent-2); }

@@ -90,6 +90,16 @@ export default function App() {
     return () => { alive = false; clearTimeout(timer) }
   }, [loadHealth])
 
+  /** Re-read /health until the HQ (AI) check has an answer (after installing / removing it). */
+  const refreshHealth = useCallback(async () => {
+    for (let i = 0; i < 300; i++) {
+      const h = await loadHealth()
+      if (h && h.demucs_available !== null) return h
+      await new Promise((r) => setTimeout(r, 1000))
+    }
+    return null
+  }, [loadHealth])
+
   useEffect(() => host.onError((msg) => notify(msg, 'error')), [host, notify])
 
   // --- importing files (drop anywhere, or Browse…) --------------------------------------------
@@ -150,8 +160,8 @@ export default function App() {
   }, [ready, importFiles, notify])
 
   const engineUp = boot ? boot.state === 'ready' : !!health && !engineError
-  const ctx = useMemo(() => ({ host, health, notify, engineUp, engineGen, importFiles, uploads, libraryKick }),
-    [host, health, notify, engineUp, engineGen, importFiles, uploads, libraryKick])
+  const ctx = useMemo(() => ({ host, health, notify, engineUp, engineGen, importFiles, uploads, libraryKick, refreshHealth }),
+    [host, health, notify, engineUp, engineGen, importFiles, uploads, libraryKick, refreshHealth])
 
   // Never a blank window: until the engine answers, show the start-up screen (or its error).
   const starting = !health && (boot ? true : !engineError)
