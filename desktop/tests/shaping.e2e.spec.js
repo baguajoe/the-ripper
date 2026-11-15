@@ -3,7 +3,7 @@
 const { test, expect, _electron: electron } = require('@playwright/test')
 const fs = require('node:fs')
 const path = require('node:path')
-const { ROOT, fixtures, tempDirs, appEnv, inspectWav, pyJson } = require('./helpers')
+const { ROOT, fixtures, tempDirs, appEnv, inspectWav, pyJson, setWindowSize } = require('./helpers')
 
 test.setTimeout(400_000)
 
@@ -22,6 +22,7 @@ test.beforeAll(async () => {
     env: appEnv(dirs, { RIPPER_E2E_FAKE_OS_DRAG: '1' }),
   })
   win = await app.firstWindow({ timeout: 60_000 })
+  await setWindowSize(app, win)
   win.on('console', (m) => { if (m.type() === 'error') consoleErrors.push(m.text()) })
   win.on('pageerror', (e) => consoleErrors.push(`pageerror: ${e.message}`))
 })
