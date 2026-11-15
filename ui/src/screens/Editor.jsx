@@ -378,10 +378,11 @@ function Editor({ id, source }) {
     const old = player.current
     if (!old) return
     const pl = await LivePlayer.create(newCtx)
+    const main = old.mainSrc // before dispose() lets go of it
     old.transportStop()
     old.dispose()
     player.current = pl
-    if (old.mainSrc) pl.setSource(old.mainSrc)
+    if (main) pl.setSource(main)
     setLivePlayer(pl)
   }), [host])
 
