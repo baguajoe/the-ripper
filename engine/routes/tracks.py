@@ -97,6 +97,44 @@ def upload():
     return jsonify(job_id=job_id, track_id=track["id"]), 202
 
 
+@bp.post("/tracks/<track_id>/fit")
+def fit(track_id: str):
+    """Fit the sample to the project: {bpm?: target tempo, key?: target key (e.g. "Gm")} ->
+    a new track (stretched / shifted, re-analyzed). 202 {job_id, track_id}."""
+    from ..services import stretch
+    require_feature("fit")
+    parent = require_track(track_id, ready=True)
+    data = body()
+    a = parent["analysis"]
+    bpm = data.get("bpm")
+    try:
+        bpm = float(bpm) if bpm not in (None, "") else None
+    except (TypeError, ValueError):
+        raise ApiError(400, "invalid_bpm", "bpm must be a number")
+    if bpm is not None and not (40 <= bpm <= 300):
+        raise ApiError(400, "invalid_bpm", "bpm must be between 40 and 300")
+    if bpm is not None and not (0.25 <= a["bpm"] / bpm <= 4):
+        raise ApiError(400, "invalid_bpm", "That's more than 2 octaves of stretch")
+    semis = 0
+    if data.get("key"):
+        if not a.get("key"):
+            raise ApiError(400, "no_key", "This track has no detected key to shift from")
+        try:
+            semis = stretch.key_shift(a["key"], str(data["key"]))
+        except ValueError as exc:
+            raise ApiError(400, "invalid_key", str(exc))
+    if bpm is None and semis == 0:
+        raise ApiError(400, "nothing_to_do", "Already at that tempo and key")
+    st = state()
+    label = ", ".join(x for x in [f"{bpm:g} BPM" if bpm else "", stretch.shifted_key(a["key"], semis) if semis and a.get("key") else ""] if x)
+    track = st.library.create(title=f"{parent['title']} ({label})"[:160], source="fit", status="analyzing")
+    st.library.update(track["id"], parent_id=parent["id"])
+    job_id = _start_import(track["id"], "engine.services.pipeline:fit_track",
+                           str(st.library.track_dir(parent["id"])), parent, bpm, semis)
+    return jsonify(job_id=job_id, track_id=track["id"], semitones=semis,
+                   ratio=(a["bpm"] / bpm) if bpm else 1.0), 202
+
+
 @bp.post("/tracks/<track_id>/retry")
 def retry(track_id: str):
     """Re-run a failed import. Uses the single-threaded 'safe' worker pool, so a retry after a

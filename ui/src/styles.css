@@ -340,3 +340,6 @@ input[type=range] { accent-color: var(--accent); }
 .step-accent.step-on .step-vel { background: #ff8a65; }
 .step-acc.step-on { background: var(--accent-2); }
 .step-play { box-shadow: inset 0 0 0 1px #ffd23f; }
+.fx-off > *:not(legend) { opacity: 0.45; }
+.match-ctl { display: flex; align-items: center; gap: 4px; }
+.match-ctl .input-num { width: 64px; }

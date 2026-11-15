@@ -6,8 +6,13 @@ import { isShaped } from '../dsp/params.js'
 import { renderPad, planarBytes } from '../dsp/render.js'
 import { getPitched } from './pitched.js'
 import { Vintage } from '../dsp/vintage.js'
+import { fxTail } from '../dsp/fx.js'
 
 const sources = new Map() // `${trackId}:${source}` -> {sr, channels}
+const tempos = new Map() // trackId -> bpm (tempo-synced effects)
+
+/** The project tempo of a track (tempo-synced delays in rendered clips). */
+export const setTrackBpm = (trackId, bpm) => tempos.set(trackId, bpm)
 const cache = new Map() // render key -> {id?: string, promise}
 
 /** The editor registers the audio it plays so exports can render from the same samples. */
@@ -20,19 +25,20 @@ export const needsClip = (s) => isShaped(s) || (!!s.vintage && s.vintage !== 'of
 
 const RENDER_FIELDS = ['source', 'start', 'end', 'reverse', 'gain', 'fadeIn', 'fadeOut', 'tune', 'fine', 'keepLength',
   'env', 'filter', 'velVol', 'velFilter', 'pan', 'fx', 'vintage']
-const keyOf = (trackId, s) => JSON.stringify([trackId, ...RENDER_FIELDS.map((k) => s[k] ?? null)])
+const keyOf = (trackId, s) => JSON.stringify([trackId, tempos.get(trackId) ?? null, ...RENDER_FIELDS.map((k) => s[k] ?? null)])
 
 /** Render hooks the later phases add (bank vintage, effects tails). */
 export const renderHooks = {
   bankFx: (s, sr) => (s.vintage && s.vintage !== 'off' ? new Vintage(sr, s.vintage) : null),
-  tail: () => 0,
+  tail: (s, bpm) => fxTail(s.fx, bpm),
 }
 
 async function renderAndUpload(trackId, s) {
   const src = sources.get(`${trackId}:${s.source || 'mix'}`)
   if (!src) throw new Error('The audio for this pad is not loaded yet - try again in a moment')
   const pitched = (await getPitched(trackId, s)) || null
-  const out = renderPad(src, s, { pitched, bankFx: renderHooks.bankFx(s, src.sr), tail: renderHooks.tail(s) })
+  const bpm = tempos.get(trackId) || 120
+  const out = renderPad(src, s, { pitched, bpm, bankFx: renderHooks.bankFx(s, src.sr), tail: renderHooks.tail(s, bpm) })
   return api.uploadClip(planarBytes(out), src.sr, 2)
 }
 

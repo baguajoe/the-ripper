@@ -42,3 +42,33 @@ def process(audio: np.ndarray, sr: int, *, time_ratio: float = 1.0, semitones: f
 def pitch_shift(audio: np.ndarray, sr: int, semitones: float) -> np.ndarray:
     """Transpose by `semitones` keeping the exact length."""
     return process(audio, sr, semitones=semitones)
+
+
+NOTE_NAMES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"]
+_FLATS = {"Db": "C#", "Eb": "D#", "Gb": "F#", "Ab": "G#", "Bb": "A#"}
+
+
+def parse_key(label: str) -> tuple[int, str]:
+    """'F#m' / 'Bb' / 'A minor' -> (root 0..11, 'major' | 'minor')."""
+    s = (label or "").strip().replace(" minor", "m").replace(" major", "").replace("min", "m")
+    minor = s.endswith("m")
+    root = s[:-1] if minor else s
+    root = _FLATS.get(root, root)
+    if root not in NOTE_NAMES:
+        raise ValueError(f"unknown key '{label}'")
+    return NOTE_NAMES.index(root), "minor" if minor else "major"
+
+
+def key_shift(from_key: str, to_key: str) -> int:
+    """Semitones (-6..+5, the shortest way) that move from_key's tonic to to_key's. A minor key and
+    its relative major count as the same key (Am -> C = 0)."""
+    def major_root(k):
+        r, m = parse_key(k)
+        return (r + 3) % 12 if m == "minor" else r
+    d = (major_root(to_key) - major_root(from_key)) % 12
+    return d - 12 if d > 5 else d
+
+
+def shifted_key(key: str, semitones: int) -> str:
+    r, m = parse_key(key)
+    return NOTE_NAMES[(r + semitones) % 12] + ("m" if m == "minor" else "")

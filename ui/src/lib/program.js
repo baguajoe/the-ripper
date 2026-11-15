@@ -144,3 +144,16 @@ export function describeChop(chop) {
   if (mode === 'transients') return `Transients (max ${cap})`
   return 'Manual'
 }
+
+/** The program after the audio was time-stretched by `ratio` (new length / old length). */
+export function scaleProgram(program, ratio) {
+  const sc = (t) => t * ratio
+  return {
+    ...program,
+    banks: program.banks.map((b) => ({
+      ...b,
+      slices: b.slices.map((s) => ({ ...s, start: sc(s.start), end: sc(s.end) })),
+      chop: b.chop ? { ...b.chop, region: { start: sc(b.chop.region.start), end: sc(b.chop.region.end) } } : null,
+    })),
+  }
+}

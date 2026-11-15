@@ -92,6 +92,8 @@ export const api = {
   getTrack: (id) => request(`/tracks/${id}`),
   patchTrack: (id, body) => request(`/tracks/${id}`, { method: 'PATCH', body }),
   deleteTrack: (id) => request(`/tracks/${id}`, { method: 'DELETE' }),
+  /** Fit to a tempo / key: a new track. Resolves {job_id, track_id, ratio, semitones}. */
+  fitTrack: (id, body) => request(`/tracks/${id}/fit`, { method: 'POST', body }),
   retryTrack: (id) => request(`/tracks/${id}/retry`, { method: 'POST' }),
   importLink: (url) => request('/tracks/link', { method: 'POST', body: { url } }),
   getJob: (id) => request(`/jobs/${id}`),

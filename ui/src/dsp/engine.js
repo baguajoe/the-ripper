@@ -8,6 +8,8 @@
 //   * Choke flag: choked pads cut each other in any bank (a choke group).
 //   * Note-on pads play only while held; release() starts their release.
 import { Voice } from './voice.js'
+import { FxChain } from './fx.js'
+import { hasFx } from './params.js'
 
 export const BANKS = 8
 export const AUX = BANKS // the metronome bus: no bank processing
@@ -24,7 +26,9 @@ export class Engine {
     this.busL = []
     this.busR = []
     this.bankFx = Array.from({ length: BANKS }, () => null) // {process(L, R, n)} per bank (vintage)
-    this.master = null // {process(L, R, n)} master bus
+    this.master = null // FxChain on the master bus (not the metronome)
+    this.padFx = new Map() // "bank:pad" -> {chain, L, R, bank, used}: pads with effects get their own bus
+    this.bpm = 120 // tempo-synced effects
     this.triggered = 0
     this.nextId = 1
     this.listeners = new Set() // (event) => void: 'start' / 'end' notifications
@@ -80,6 +84,7 @@ export class Engine {
       const pitched = e.pitched ? this.sources.get(e.pitched) ?? null : null
       const v = new Voice({ src, slice: e.slice, bank: e.bank ?? 0, pad: e.pad ?? -1, vel: e.vel ?? 127,
         outSr: this.sr, startFrame: f, pitched, id: this.nextId++ })
+      if (hasFx(e.slice) && v.bank < BANKS) v.fxKey = this._padChain(v.bank, v.pad, e.slice.fx)
       this.voices.push(v)
       this.triggered++
       for (const fn of this.listeners) fn({ type: 'start', voice: v, event: e })
@@ -88,11 +93,29 @@ export class Engine {
     for (const fn of this.listeners) fn({ type: e.type, event: e }) // custom events (sequencer, metronome)
   }
 
+  _padChain(bank, pad, fx) {
+    const key = `${bank}:${pad}`
+    let p = this.padFx.get(key)
+    if (!p) {
+      p = { chain: new FxChain(this.sr), L: new Float32Array(this.cap), R: new Float32Array(this.cap), bank, fx: null }
+      this.padFx.set(key, p)
+    }
+    if (p.fx !== fx) { p.chain.configure(fx, this.bpm); p.fx = fx }
+    return key
+  }
+
+  /** Reconfigure a pad's effects (live tweaks: no retrigger needed). */
+  setPadFx(bank, pad, fx) {
+    const p = this.padFx.get(`${bank}:${pad}`)
+    if (p && p.fx !== fx) { p.chain.configure(fx || {}, this.bpm); p.fx = fx }
+  }
+
   _ensure(n) {
     if (n <= this.cap) return
     this.cap = n
     this.busL = Array.from({ length: BUSES }, () => new Float32Array(n))
     this.busR = Array.from({ length: BUSES }, () => new Float32Array(n))
+    for (const p of this.padFx.values()) { p.L = new Float32Array(n); p.R = new Float32Array(n) }
   }
 
   /** Render n frames, ADDING into L and R (Float32Arrays, at offset `at`). */
@@ -101,6 +124,7 @@ export class Engine {
     this._ensure(n)
     const used = new Array(BUSES).fill(false)
     for (let b = 0; b < BUSES; b++) { this.busL[b].fill(0, 0, n); this.busR[b].fill(0, 0, n) }
+    for (const p of this.padFx.values()) { p.L.fill(0, 0, n); p.R.fill(0, 0, n); p.used = false }
     const end = this.frame + n
     let f = this.frame
     while (f < end) {
@@ -108,15 +132,27 @@ export class Engine {
       const next = this.queue.length ? Math.min(end, this.queue[0].frame) : end
       for (const v of this.voices) {
         used[v.bank] = true
-        v.render(this.busL[v.bank], this.busR[v.bank], f, next, f - this.frame)
+        const p = v.fxKey ? this.padFx.get(v.fxKey) : null
+        if (p) { p.used = true; v.render(p.L, p.R, f, next, f - this.frame) }
+        else v.render(this.busL[v.bank], this.busR[v.bank], f, next, f - this.frame)
       }
       f = next
     }
     const before = this.voices.length
     this.voices = this.voices.filter((v) => !v.done)
     if (this.voices.length !== before) for (const fn of this.listeners) fn({ type: 'end' })
-    for (let b = 0; b < BUSES; b++) {
-      const fx = b < BANKS ? this.bankFx[b] : null
+    // pad effects -> their bank's bus
+    for (const p of this.padFx.values()) {
+      if (!p.used && !p.chain.tail()) continue
+      p.chain.process(p.L, p.R, n)
+      used[p.bank] = true
+      const bl = this.busL[p.bank]
+      const br = this.busR[p.bank]
+      for (let i = 0; i < n; i++) { bl[i] += p.L[i]; br[i] += p.R[i] }
+    }
+    // banks (vintage) -> master effects -> + metronome
+    for (let b = 0; b < BANKS; b++) {
+      const fx = this.bankFx[b]
       if (fx && (used[b] || fx.tail?.())) fx.process(this.busL[b], this.busR[b], n)
       else if (!used[b]) continue
       const bl = this.busL[b]
@@ -124,6 +160,11 @@ export class Engine {
       for (let i = 0; i < n; i++) { L[at + i] += bl[i]; R[at + i] += br[i] }
     }
     if (this.master) this.master.process(L, R, n, at)
+    if (used[AUX]) {
+      const bl = this.busL[AUX]
+      const br = this.busR[AUX]
+      for (let i = 0; i < n; i++) { L[at + i] += bl[i]; R[at + i] += br[i] }
+    }
     this.frame = end
   }
 

@@ -271,6 +271,40 @@ swing: 50..75}`.
 channel 10, note = `36 + bank × 16 + pad` (C1 = bank A pad 1), the pass's exact ticks and
 velocities (swing + accents applied).
 
+### 4.6 Effects (v1.2)
+
+Per pad (`slice.fx`) and on the master bus (`program.master`), each with `on` and a wet/dry
+`mix`: **drive** (`amount`: `x + mix·(0.8·tanh(k·x)/tanh(k) − x)`, k = 1 + 15·amount),
+**delay** (`time` as a note value at the project tempo — 1/2, 1/4, 1/4T, 1/8, 1/8., 1/8T, 1/16 —
+`feedback` ≤ 0.9, stereo ping-pong), **reverb** (Freeverb: 8 combs + 4 allpasses per channel,
+`size` → feedback 0.7..0.98, `damp`), and on the master only a **compressor** (peak, stereo
+linked, 6 dB soft knee, `threshold`, `ratio`, `attack`, `release`, `makeup`). Order: drive →
+delay → reverb (→ compressor). A pad with effects gets its own bus before its bank's bus
+(vintage) → master effects → output; the metronome skips the master bus.
+A pad's export (a clip, 4.2) includes its effect tail: delay `time × echoes to −60 dB` +
+reverb `0.8 + 3.2·size` s (max 8 s). Single-pad exports don't include the master bus; beat
+exports and resampling do. After an effect's input has been silent for its tail length its
+state is cleared on that exact sample, so renders never depend on audio block boundaries.
+
+### 4.7 Resample (v1.2)
+
+The pad engine records its own output (after the master bus): **Resample** records one pass of
+the pattern / song from the pass's first sample, plus effect tails (until 0.5 s below −80 dB,
+max 6 s); **Live** records until stopped. The recording is identical to an offline render of
+the same pass. It's imported as a 32-bit float WAV upload (`<title> (resampled …).wav`) and
+analysed like any track.
+
+### 4.8 Fit to tempo / key (v1.2)
+
+`POST /tracks/<id>/fit {bpm?, key?}` → 202 `{job_id, track_id, ratio, semitones}`. A new track:
+the source time-stretched by `ratio = bpm_old / bpm` (pitch kept) and transposed by
+`semitones` = the shortest move between the two keys' tonics (−6..+5; a minor key and its
+relative major count as the same key), with Signalsmith Stretch (seed 1). The new track is
+analysed from scratch; then the grid snaps to the target: `bpm` = target, `downbeat` = old ×
+ratio, `key` = old key + semitones. What the analyser detected is kept in `analysis.fit`
+(`detected_bpm`, `detected_key`, `ratio`, `semitones`, `from`). The editor opens the new track
+with the old chops / pads / patterns, times × ratio.
+
 ### 4.5 MIDI controllers (v1.2)
 
 Web MIDI inputs (any device) plus virtual inputs. Note-ons hit pads with their velocity;

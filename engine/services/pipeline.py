@@ -200,6 +200,38 @@ def pitch_slice(ctx, track_dir: str, source: str, start: float, end: float, semi
     return {"sr": sr, "channels": int(shifted.shape[0]), "frames": int(shifted.shape[1])}
 
 
+def fit_track(ctx, track_dir: str, parent_dir: str, parent: dict, bpm: float | None, semitones: int) -> dict:
+    """Fit a sample to the project: time-stretch to `bpm` (pitch kept) and transpose by `semitones`
+    (tempo kept) with Signalsmith Stretch, into a new track. The grid snaps to the target tempo
+    (scaled downbeat) and key; what the analyzer re-detects is kept in analysis.fit."""
+    import soundfile as sf
+
+    from . import analyzer, stretch
+    pa = parent["analysis"]
+    ratio = (pa["bpm"] / bpm) if bpm else 1.0  # new length / old length
+    ctx.progress(0.05, "Loading audio")
+    data, sr = sf.read(str(Path(parent_dir) / "source.wav"), dtype="float32", always_2d=True)
+    ctx.progress(0.15, f"Stretching to {bpm:g} BPM" if bpm else "Shifting key")
+    out = stretch.process(data.T, sr, time_ratio=ratio, semitones=semitones)
+    d = Path(track_dir)
+    tmp = d / "source.part.wav"
+    sf.write(str(tmp), out.T, sr, subtype="FLOAT")
+    tmp.replace(d / "source.wav")
+    fields = _analyze(ctx, d, None, 0.5)
+    a = fields["analysis"]
+    target_bpm = float(bpm) if bpm else pa["bpm"]
+    target_key = stretch.shifted_key(pa["key"], semitones) if pa.get("key") else a.get("key")
+    a["fit"] = {"from": parent["id"], "ratio": round(ratio, 6), "semitones": semitones,
+                "detected_bpm": a["bpm"], "detected_key": a.get("key")}
+    downbeat = round(pa.get("downbeat", 0.0) * ratio, 4)
+    a.update(bpm=round(target_bpm, 2), downbeat=downbeat,
+             beats=analyzer.grid_beats(target_bpm, downbeat, fields["duration"]))
+    if target_key:
+        r, m = stretch.parse_key(target_key)
+        a.update(key=target_key, key_root=stretch.NOTE_NAMES[r], key_mode=m)
+    return fields
+
+
 def analyze_path(ctx, path: str) -> dict:
     """Diagnostics (python -m engine --analyze FILE): decode + analyze one file, keep nothing."""
     import tempfile

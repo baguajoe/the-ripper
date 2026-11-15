@@ -2,7 +2,7 @@
 // tracks the voice count the worklet reports. Same API as v1.1's SlicePlayer.
 import workletUrl from '../dsp/worklet.js?worker&url'
 import { Engine } from '../dsp/engine.js'
-import { renderPad } from '../dsp/render.js'
+import { renderBeat, renderPad } from '../dsp/render.js'
 
 const loaded = new WeakMap() // AudioContext -> Promise (module added)
 
@@ -37,6 +37,7 @@ export class LivePlayer {
   /** The source the pads play from: {sr, channels} (copied into the worklet). */
   setSource(src, id = 'main') {
     this.stopAll()
+    if (id === 'main') this.mainSrc = src
     const channels = src.channels.map((c) => c.slice())
     this.post({ type: 'source', id, sr: src.sr, channels }, channels.map((c) => c.buffer))
   }
@@ -45,6 +46,7 @@ export class LivePlayer {
   setPitched(key, src) {
     if (this.pitched.has(key)) return
     this.pitched.add(key)
+    this.pitchedSrc = { ...(this.pitchedSrc || {}), [`p:${key}`]: src }
     this.setSourceOnly(`p:${key}`, src)
   }
 
@@ -74,10 +76,11 @@ export class LivePlayer {
   // --- sequencer transport (src/dsp/transport.js) --------------------------------------------
   /** Pads per bank for the sequencer: {banks: [{mono, vintage, pads: [slice|null] x16}]}. */
   setProgram(prog) {
-    this.post({ type: 'program', program: { banks: prog.banks.map((b) => ({ ...b, pads: b.pads.map((s) => (s ? { ...plain(s), pitched: s.pitched || null } : null)) })) } })
+    this.lastProgram = prog
+    this.post({ type: 'program', program: { bpm: prog.bpm, master: prog.master, banks: prog.banks.map((b) => ({ ...b, pads: b.pads.map((s) => (s ? { ...plain(s), pitched: s.pitched || null } : null)) })) } })
   }
 
-  setPass(pass, loop = true) { this.post({ type: 'pass', pass, loop }) }
+  setPass(pass, loop = true) { this.lastPass = pass; this.post({ type: 'pass', pass, loop }) }
 
   transportPlay({ countIn = false, metronome = false, record = false } = {}) {
     this.resume()
@@ -97,6 +100,36 @@ export class LivePlayer {
   }
 
   get transport() { return { playing: !!this.status.transport, recording: !!this.status.recording, tick: this.status.tick, pass: this.status.pass } }
+
+  // --- resample -----------------------------------------------------------------------------
+  _captured() {
+    return new Promise((resolve) => {
+      const off = this.on((m) => { if (m.type === 'captured') { off(); resolve({ sr: m.sr, channels: m.channels }) } })
+    })
+  }
+
+  /** Record everything the pads / sequencer play until stopCapture(); resolves {sr, channels}. */
+  startCapture() {
+    this.resume()
+    const done = this._captured()
+    this.post({ type: 'capture', on: true })
+    return done
+  }
+
+  stopCapture() { this.post({ type: 'capture', on: false }) }
+
+  /** One pass of the pattern / song from its first sample (+ effect tails), recorded. */
+  resamplePass({ maxTail = 6 } = {}) {
+    this.resume()
+    const done = this._captured()
+    this.post({ type: 'resample', at: this.ctx.currentTime + 0.05, maxTail })
+    return done
+  }
+
+  /** Offline render of exactly what resamplePass() records (tests, beat exports). */
+  renderPass(opts = {}) {
+    return renderBeat({ main: this.mainSrc, ...(this.pitchedSrc || {}) }, this.lastProgram, this.lastPass, { sr: this.ctx.sampleRate, ...opts })
+  }
 
   /** Tests: record the frames the sequencer fires on, then fetch them. */
   traceFires(on) { this.post({ type: 'traceFires', on }) }
@@ -132,4 +165,4 @@ export function plain(s) {
 }
 
 // e2e: tests render the app's own engine offline (the mono-choke test, shaping renders).
-if (typeof window !== 'undefined') window.__ripperTest = { ...(window.__ripperTest || {}), Engine, renderPad }
+if (typeof window !== 'undefined') window.__ripperTest = { ...(window.__ripperTest || {}), Engine, renderPad, renderBeat }

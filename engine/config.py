@@ -68,6 +68,9 @@ FEATURES = {
     "single_export": False,  # one slice or one stem
     "patterns_beyond_b": True,  # sequencer patterns C-H
     "vintage": True,         # vintage 12-bit / 16-bit bank character
+    "effects": True,         # pad + master effects
+    "resample": True,        # record pads / sequencer into a new sample
+    "fit": True,             # time-stretch / key-shift the sample to the project
 }
 
 MAX_UPLOAD_BYTES = 200 * 1024 * 1024          # audio files
