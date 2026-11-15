@@ -21,6 +21,7 @@ log = logging.getLogger("ripper.library")
 PUBLIC_FIELDS = (
     "id", "title", "source", "url", "created", "status", "error", "job_id",
     "duration", "sr", "analysis", "stems", "crashed", "from_video",
+    "pinned", "session_path", "parent_id",
 )
 
 
@@ -117,6 +118,8 @@ class Library:
             except OSError:
                 continue
             track = self._tracks.get(p.name)
+            if track and track.get("pinned"):
+                continue  # part of a saved session: never expires
             if track:
                 age = now - track.get("created", now)
             if age > max_age:

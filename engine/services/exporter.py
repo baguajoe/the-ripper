@@ -91,6 +91,11 @@ def build_filename(track: str, bpm: float, key: str | None, part: str, ext: str 
     return f"{base_name(track, bpm, key)}_{sanitize(part, 'part')}.{ext}"
 
 
+def numbered_filename(track: str, bpm: float, key: str | None, prefix: str, name: str, ext: str = "wav") -> str:
+    """{track}_{bpm}bpm_{key}_{pad##|slice##}_{name}.wav — numbered so DAWs list them in order."""
+    return f"{base_name(track, bpm, key)}_{sanitize(prefix, 'part', 12)}_{sanitize(name, 'part')}.{ext}"
+
+
 # --- slice rendering --------------------------------------------------------------------------
 @dataclass
 class ExportOptions:
@@ -269,7 +274,11 @@ def build_midi(slices: list[Slice], bpm: float, name: str = "The Ripper slices",
 @dataclass
 class KitFile:
     arcname: str      # path inside the zip / export folder
-    data: bytes
+    data: bytes | None = None
+    make: object = None  # () -> bytes, for big files made one at a time while writing
+
+    def bytes(self) -> bytes:
+        return self.data if self.data is not None else self.make()
 
 
 def build_kit(*, title: str, bpm: float, key: str | None, sources: dict[str, tuple[np.ndarray, int]],
@@ -320,7 +329,7 @@ def zip_bytes(files: list[KitFile]) -> bytes:
     # WAV doesn't compress well; STORED keeps export fast.
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_STORED) as z:
         for f in files:
-            z.writestr(f.arcname, f.data)
+            z.writestr(f.arcname, f.bytes())
     return buf.getvalue()
 
 
@@ -330,7 +339,37 @@ def write_files(files: list[KitFile], dest: Path) -> list[str]:
         p = dest / f.arcname
         p.parent.mkdir(parents=True, exist_ok=True)
         tmp = p.with_name(p.name + ".part")
-        tmp.write_bytes(f.data)
+        tmp.write_bytes(f.bytes())
         tmp.replace(p)
         out.append(str(p))
     return out
+
+
+# --- v1.2: beat exports ------------------------------------------------------------------------
+def render_item(clip: np.ndarray, sr: int, opts: ExportOptions, bpm: float, loop: bool) -> bytes:
+    """A rendered beat / pad stem (from the UI's pad engine): resampled to the export rate, never
+    trimmed or normalised (the files of one export must line up and sum exactly)."""
+    out_sr = int(opts.sr)
+    data = clip
+    if out_sr != sr:
+        import librosa
+        data = librosa.resample(clip, orig_sr=sr, target_sr=out_sr)
+    return wav_bytes(np.clip(data, -1, 1).astype(np.float32), out_sr, bpm,
+                     beats_in(clip.shape[1] / sr, bpm), loop)
+
+
+def positioned_wav(audio: np.ndarray, sr: int, sl: Slice, start: float, end: float,
+                   opts: ExportOptions, bpm: float) -> bytes:
+    """"Chops in original position": the range [start, end) of the song as silence, with only this
+    slice's audio, untouched, where it was. Every file of the set has the same length and starts
+    at `start`, so they line up at bar 1 in a DAW and sum back to the original."""
+    a, b = int(round(start * sr)), int(round(end * sr))
+    out = np.zeros((audio.shape[0], max(1, b - a)), dtype=np.float32)
+    s0, s1 = max(a, int(round(sl.start * sr))), min(b, int(round(sl.end * sr)))
+    if s1 > s0:
+        out[:, s0 - a:s1 - a] = audio[:, s0:s1]
+    out_sr = int(opts.sr)
+    if out_sr != sr:
+        import librosa
+        out = librosa.resample(out, orig_sr=sr, target_sr=out_sr)
+    return wav_bytes(np.clip(out, -1, 1), out_sr, bpm, beats_in(end - start, bpm), False)

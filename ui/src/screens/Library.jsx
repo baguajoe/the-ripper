@@ -8,7 +8,7 @@ import TrackCard from '../components/TrackCard.jsx'
 const PENDING = new Set(['downloading', 'analyzing'])
 
 export default function Library() {
-  const { notify, engineUp, engineGen, uploads, libraryKick } = useApp()
+  const { notify, engineUp, engineGen, uploads, libraryKick, recentSessions, openSession } = useApp()
   const [tracks, setTracks] = useState(null)
   const [linkBusy, setLinkBusy] = useState(false)
   const timer = useRef(null)
@@ -98,6 +98,15 @@ export default function Library() {
           ))}
         </div>
       )}
+      <section className="recent-sessions" data-testid="recent-sessions">
+        <span className="muted small">Sessions</span>
+        <button className="btn btn-small" onClick={() => openSession()} data-testid="library-open-session" title="Open a saved session (.ripper) — Ctrl+O">Open session…</button>
+        {(recentSessions || []).map((r) => (
+          <button key={r.path} className="chip chip-small" onClick={() => openSession(r.path)} title={r.path} data-testid="recent-session">
+            {r.title || r.path.split(/[\\/]/).pop()}
+          </button>
+        ))}
+      </section>
       <section className="grid" data-testid="track-grid">
         {tracks === null && <div className="muted">Loading…</div>}
         {tracks?.length === 0 && uploads.length === 0 && (

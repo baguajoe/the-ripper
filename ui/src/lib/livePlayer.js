@@ -126,6 +126,31 @@ export class LivePlayer {
     return done
   }
 
+  /**
+   * Pad latency, measured: how long a trigger takes to reach the audio thread (median of n
+   * pings) + one render quantum + the context's reported base and output latency. In ms.
+   */
+  async measureLatency(n = 12) {
+    this.resume()
+    const delays = []
+    for (let i = 0; i < n; i++) {
+      const t0 = this.ctx.currentTime
+      const pong = await new Promise((resolve) => {
+        const off = this.on((m) => { if (m.type === 'pong' && m.id === i) { off(); resolve(m) } })
+        this.post({ type: 'ping', id: i })
+        setTimeout(() => { off(); resolve(null) }, 1000)
+      })
+      if (pong) delays.push(Math.max(0, pong.t - t0))
+      await new Promise((r) => setTimeout(r, 15))
+    }
+    delays.sort((a, b) => a - b)
+    const sched = (delays[Math.floor(delays.length / 2)] ?? 0) * 1000
+    const quantum = (128 / this.ctx.sampleRate) * 1000
+    const base = (this.ctx.baseLatency || 0) * 1000
+    const output = (this.ctx.outputLatency || 0) * 1000
+    return { total: sched + quantum + base + output, schedule: sched, quantum, base, output, sampleRate: this.ctx.sampleRate, samples: delays.length }
+  }
+
   /** Offline render of exactly what resamplePass() records (tests, beat exports). */
   renderPass(opts = {}) {
     return renderBeat({ main: this.mainSrc, ...(this.pitchedSrc || {}) }, this.lastProgram, this.lastPass, { sr: this.ctx.sampleRate, ...opts })

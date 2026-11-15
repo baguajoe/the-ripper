@@ -9,6 +9,7 @@
  *   prepareDrag(spec): Promise<{ files: string[] }>   pre-render so dragstart is instant
  *   startDrag(spec): void                             call synchronously inside dragstart
  *   pickFolder(): Promise<string|null>                native folder dialog (remembers last)
+ *   saveSessionDialog(name), openSessionDialog(): Promise<string|null>   .ripper file dialogs
  *   exportToFolder(spec): Promise<{ files: string[], folder: string }|null>
  *   download({ path, body, filename }): Promise<{ path: string }>
  *                                                     POST an engine route, save the reply

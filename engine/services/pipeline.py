@@ -166,6 +166,8 @@ def build_files(ctx, track_dir: str, spec: dict) -> dict:
                                    opts=opts, stems=stems, include_midi=bool(spec.get("include_midi")),
                                    folders=bool(spec.get("folders", True)),
                                    downbeat=spec.get("downbeat"))
+        files += _beat_files(d, spec, opts, title, bpm, key)
+        exporter._dedupe(files)
     out = spec["out"]
     if out["kind"] == "zip":
         p = Path(out["path"])
@@ -175,6 +177,44 @@ def build_files(ctx, track_dir: str, spec: dict) -> dict:
     else:
         paths = exporter.write_files(files, Path(out["dir"]))
     return {"files": paths, "stems": made_stems}
+
+
+def _beat_files(d: Path, spec: dict, opts, title: str, bpm: float, key: str | None) -> list:
+    """v1.2 beat exports: rendered items (beat / pad stems), MIDI files, chops in original position."""
+    import base64
+
+    from . import clips, exporter, media
+    from .exporter import KitFile, Slice
+    folders = bool(spec.get("folders", True))
+    sub = (lambda f: f"{f}/" if folders and f else "")
+    files = []
+    for it in spec.get("items") or []:
+        def make(it=it):
+            audio, sr = clips.load(d.parent, it["clip"])
+            return exporter.render_item(audio, sr, opts, bpm, bool(it.get("loop")))
+        files.append(KitFile(sub(it.get("folder")) + exporter.numbered_filename(title, bpm, key, it["prefix"], it["name"]), make=make))
+    for m in spec.get("midi_items") or []:
+        files.append(KitFile(sub(m.get("folder")) + exporter.numbered_filename(title, bpm, key, m["prefix"], m["name"], "mid"),
+                             data=base64.b64decode(m["data_b64"])))
+    pos = spec.get("positioned")
+    if pos:
+        cache: dict = {}
+
+        def source(src):
+            if src not in cache:
+                cache.clear()  # one source in memory at a time
+                p = d / "source.wav" if src == "mix" else d / "stems" / f"{src}.wav"
+                cache[src] = media.read_stereo(p)
+            return cache[src]
+        for i, sd in enumerate(pos["slices"]):
+            sl = Slice(**sd)
+
+            def make(sl=sl):
+                audio, sr = source(sl.source)
+                return exporter.positioned_wav(audio, sr, sl, pos["start"], pos["end"], opts, bpm)
+            files.append(KitFile(sub(pos.get("folder")) + exporter.numbered_filename(
+                title, bpm, key, pos.get("prefix", "slice") + f"{i + 1:02d}", sl.name), make=make))
+    return files
 
 
 def pitch_slice(ctx, track_dir: str, source: str, start: float, end: float, semitones: float, out: str) -> dict:
@@ -230,6 +270,20 @@ def fit_track(ctx, track_dir: str, parent_dir: str, parent: dict, bpm: float | N
         r, m = stretch.parse_key(target_key)
         a.update(key=target_key, key_root=stretch.NOTE_NAMES[r], key_mode=m)
     return fields
+
+
+def save_session(ctx, path: str, track_dir: str, track: dict, state: dict, app_version: str) -> dict:
+    from . import sessions
+    return sessions.save(path, track_dir, track, state, app_version)
+
+
+def open_session(ctx, path: str, track_dir: str) -> dict:
+    from . import sessions
+    try:
+        sessions.extract(path, track_dir)
+    except sessions.SessionError as exc:
+        raise JobError(str(exc))
+    return {"ok": True}
 
 
 def analyze_path(ctx, path: str) -> dict:

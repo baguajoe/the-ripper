@@ -92,7 +92,7 @@ export default function TrimEditor({ slice, slices, bank, src, ctx, opts, setOpt
     const edge = ds <= de ? 'start' : 'end'
     setActive(edge)
     drag.current = { edge, id: `trim-drag-${Date.now()}` }
-    canvas.current.setPointerCapture?.(e.pointerId)
+    try { canvas.current.setPointerCapture(e.pointerId) } catch { /* not a live pointer */ }
     moveTo(edge, snapEdge(toT(x), opts, ctx), drag.current.id)
   }
   const onPointerMove = (e) => {

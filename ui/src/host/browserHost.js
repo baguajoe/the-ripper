@@ -1,4 +1,4 @@
-import { sharedAudioContext } from './audioContext.js'
+import { webAudio } from './audioContext.js'
 
 /**
  * Dev-only fallback when the UI is opened in a plain browser (e.g. debugging the Vite
@@ -18,6 +18,8 @@ export function browserHost() {
     prepareDrag: async () => ({ files: [] }),
     startDrag: () => {},
     pickFolder: async () => null,
+    saveSessionDialog: async () => null, // sessions need the desktop app (files on disk)
+    openSessionDialog: async () => null,
     exportToFolder: unsupported('Export to folder'),
     download: unsupported('Saving files'),
     showItemInFolder: () => {},
@@ -31,6 +33,6 @@ export function browserHost() {
     copyDiagnostics: unsupported('Copying diagnostics'),
     openLogFolder: unsupported('Opening the log folder'),
     onShowAbout: () => () => {},
-    audio: { getContext: sharedAudioContext },
+    audio: webAudio,
   }
 }

@@ -343,3 +343,20 @@ input[type=range] { accent-color: var(--accent); }
 .fx-off > *:not(legend) { opacity: 0.45; }
 .match-ctl { display: flex; align-items: center; gap: 4px; }
 .match-ctl .input-num { width: 64px; }
+.beat-export { border-top: 1px solid var(--line); margin-top: 8px; padding-top: 8px; display: grid; gap: 6px; }
+.beat-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 4px 12px; }
+.beat-row { display: flex; align-items: center; gap: 6px; }
+.beat-name { min-width: 104px; font-size: 12px; }
+.recent-sessions { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 0 0 10px; }
+.audio-settings { width: min(640px, calc(100vw - 32px)); }
+.audio-settings .num { display: flex; align-items: center; gap: 10px; }
+.latency { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; font-size: 12px; }
+.latency .ok { color: #7bd88f; }
+.latency .warn { color: #ffd23f; }
+.shortcuts { width: min(980px, calc(100vw - 32px)); }
+.shortcut-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 12px 24px; }
+.shortcut-grid td { padding: 2px 8px 2px 0; font-size: 12px; vertical-align: top; }
+.shortcut-grid kbd { white-space: nowrap; }
+.tour { position: fixed; right: 18px; bottom: 18px; z-index: 90; width: 340px; background: var(--panel); border: 1px solid var(--accent); border-radius: var(--radius); padding: 14px; box-shadow: 0 10px 30px rgba(0,0,0,0.5); display: grid; gap: 6px; }
+.tour p { margin: 0; font-size: 13px; line-height: 1.45; }
+.tour-actions { display: flex; justify-content: flex-end; gap: 6px; }

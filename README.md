@@ -183,8 +183,32 @@ zips, the add-on parts and `ripper-ai-manifest.json`.
    **MIDI** chip straight into FL Studio / Ableton / Logic / Studio One / your sampler or the desktop. Or
    *Export Kit (.zip)* (saved to Downloads), *Slices → folder…*, *Kit → folder…* (remembered).
 
-Shortcuts: `Space` play/pause · `L` loop (selected slice, the selection or 1 bar) · `Esc` stop
-everything · `Ctrl/Cmd+Z` undo · `Ctrl/Cmd+Shift+Z` redo.
+8. **Trim** — double-click a pad, a slice row or a slice on the waveform: drag the markers,
+   nudge with ←/→ (1 ms, Shift 10 ms, Ctrl 1 beat), type exact times; snap to zero crossings
+   (default), the nearest transient or the grid; *Link neighbors* keeps slices contiguous; *Loop
+   audition* replays the slice on every change. Slice edges dragged on the waveform snap the same way.
+9. **Pad tab** — tune ±24 st / ±50 ct (speed change, or *Keep length* = time-stretch), ADSR
+   envelope, LP/HP/BP filter + resonance, velocity → volume / filter, pan. Right-click a pad to
+   rename / color / copy / paste / clear it; Ctrl+C / Ctrl+V; Alt-drag a pad onto another to swap.
+   *Vintage 12-bit / 16-bit* per bank.
+10. **Effects tab** — per pad: drive, tempo-synced delay, reverb; master bus: the same + a
+    compressor. Wet/dry on each. Everything renders into exports.
+11. **Sequencer tab** — one row per pad, 16/32/64 steps, velocity (drag a step), accents, swing,
+    patterns A–H, song chain, count-in, metronome, live record with quantize + overdub, note repeat
+    (hold a pad), MIDI controllers + MIDI learn. **Resample** records a pass (or a live take) into a
+    new track. **Export the beat**: Beat WAV, MIDI, *Pad stems* (one WAV per used pad, all from bar 1,
+    same length) and *Chops in place* (one WAV per chop at its original position, silence elsewhere,
+    same length) — Save, → folder, or drag (several files in one drag).
+12. **Match** (editor header) — time-stretch the sample to a project BPM and/or shift it to a key
+    (Signalsmith Stretch): a new track with your chops carried over.
+13. **Sessions** — *Save / Save as… / Open…* (top bar, Ctrl+S / Ctrl+Shift+S / Ctrl+O) write a
+    `.ripper` file with the audio, chops, pads, patterns, effects and settings. Recent sessions are
+    on the Library page; open sessions autosave every minute; saved sessions never expire.
+14. **Audio** (top bar) — output device, buffer size, the latency the system reports, and
+    *Measure pad latency*.
+
+Shortcuts: press `?` for the full list. `Space` play/pause · `L` loop · `Enter` sequencer
+play/stop · `Shift+Enter` record · `Esc` stop everything · `Ctrl/Cmd+Z` undo · `Ctrl/Cmd+Shift+Z` redo.
 
 Every WAV is 24-bit, 44.1/48 kHz, named `{track}_{bpm}bpm_{key}_{slice##|stem}.wav`, with an
 ACID tempo chunk so DAWs pick up the BPM. Details: [docs/formats.md](docs/formats.md).
@@ -192,9 +216,11 @@ ACID tempo chunk so DAWs pick up the BPM. Details: [docs/formats.md](docs/format
 ## 7. Free vs Pro
 
 `engine/config.py`: `PRO_ENABLED` (env `RIPPER_PRO`, default **on**) and the `FEATURES` table.
-Pro = pad banks C–H, batch export (more than one slice), Export Kit (zip/folder/drag with stems
-and/or MIDI). Free = everything else (import, analysis, chopping into banks A–B, pads, **HQ (AI)
-stems (all models, for now)**, Fast stems, single slice / single stem export and drag). The API returns `403 {"error":
+Pro = pad banks C–H, sequencer patterns C–H, resample, effects, vintage mode, time-stretch /
+key-shift (Match, and *Keep length* tuning), batch export (more than one file: slices, pad stems,
+chops in place) and Export Kit. Free = import, analysis, chopping into banks A–B, pads + sound
+shaping, trim, patterns A–B (one pair), single-file exports (a slice, a stem, the beat WAV, the
+MIDI), **HQ (AI) stems (all models, for now)** and Fast stems. The API returns `403 {"error":
 "pro_required"}` and the UI shows a PRO tag on locked buttons.
 
 ## 8. Engine API (`/api/v1`, 127.0.0.1 only)

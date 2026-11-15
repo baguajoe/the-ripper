@@ -1,4 +1,4 @@
-import { sharedAudioContext } from './audioContext.js'
+import { webAudio } from './audioContext.js'
 
 /** Electron implementation: thin wrapper over the preload bridge (window.ripper). */
 export function electronHost(bridge) {
@@ -9,6 +9,8 @@ export function electronHost(bridge) {
     prepareDrag: (spec) => bridge.prepareDrag(spec),
     startDrag: (spec) => bridge.startDrag(spec),
     pickFolder: () => bridge.pickFolder(),
+    saveSessionDialog: (name) => bridge.saveSessionDialog(name),
+    openSessionDialog: () => bridge.openSessionDialog(),
     exportToFolder: (spec) => bridge.exportToFolder(spec),
     download: (req) => bridge.download(req),
     showItemInFolder: (p) => bridge.showItemInFolder(p),
@@ -23,6 +25,6 @@ export function electronHost(bridge) {
     copyDiagnostics: () => bridge.copyDiagnostics(),
     openLogFolder: () => bridge.openLogFolder(),
     onShowAbout: (cb) => bridge.onShowAbout(cb),
-    audio: { getContext: sharedAudioContext },
+    audio: webAudio,
   }
 }

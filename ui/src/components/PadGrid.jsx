@@ -136,7 +136,7 @@ export default function PadGrid({ banks, bank, setBank, allowedBanks, activePads
           Mono (chops cut each other)
         </label>
         <button className="btn btn-small" onClick={() => onChokeAll(true)} disabled={!slices.length} data-testid="choke-all" title="Every pad in this bank cuts the others (a choke group)">Choke all</button>
-        <button className="btn btn-small" onClick={() => onChokeAll(false)} disabled={!slices.length} data-testid="unchoke-all">Unchoke all</button>
+        <button className="btn btn-small" onClick={() => onChokeAll(false)} disabled={!slices.length} data-testid="unchoke-all" title="No pad in this bank chokes the others">Unchoke all</button>
         <button className="btn btn-small btn-ghost" onClick={onClear} disabled={!slices.length} data-testid="bank-clear" title="Empty this bank (undo with Ctrl+Z)">Clear</button>
         {children}
       </div>

@@ -29,6 +29,7 @@ export class Engine {
     this.master = null // FxChain on the master bus (not the metronome)
     this.padFx = new Map() // "bank:pad" -> {chain, L, R, bank, used}: pads with effects get their own bus
     this.bpm = 120 // tempo-synced effects
+    this.solo = null // Set of "bank:pad": only these are heard (the rest still trigger, so chokes still cut)
     this.triggered = 0
     this.nextId = 1
     this.listeners = new Set() // (event) => void: 'start' / 'end' notifications
@@ -85,6 +86,7 @@ export class Engine {
       const v = new Voice({ src, slice: e.slice, bank: e.bank ?? 0, pad: e.pad ?? -1, vel: e.vel ?? 127,
         outSr: this.sr, startFrame: f, pitched, id: this.nextId++ })
       if (hasFx(e.slice) && v.bank < BANKS) v.fxKey = this._padChain(v.bank, v.pad, e.slice.fx)
+      if (this.solo && !this.solo.has(`${v.bank}:${v.pad}`)) v.muted = true
       this.voices.push(v)
       this.triggered++
       for (const fn of this.listeners) fn({ type: 'start', voice: v, event: e })
@@ -115,6 +117,8 @@ export class Engine {
     this.cap = n
     this.busL = Array.from({ length: BUSES }, () => new Float32Array(n))
     this.busR = Array.from({ length: BUSES }, () => new Float32Array(n))
+    this.muteL = new Float32Array(n)
+    this.muteR = new Float32Array(n)
     for (const p of this.padFx.values()) { p.L = new Float32Array(n); p.R = new Float32Array(n) }
   }
 
@@ -131,6 +135,7 @@ export class Engine {
       while (this.queue.length && this.queue[0].frame <= f) this._apply(this.queue.shift())
       const next = this.queue.length ? Math.min(end, this.queue[0].frame) : end
       for (const v of this.voices) {
+        if (v.muted) { v.render(this.muteL, this.muteR, f, next, f - this.frame); continue } // runs (and gets cut) unheard
         used[v.bank] = true
         const p = v.fxKey ? this.padFx.get(v.fxKey) : null
         if (p) { p.used = true; v.render(p.L, p.R, f, next, f - this.frame) }

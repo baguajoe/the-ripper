@@ -23,6 +23,8 @@ export function juceHost(juce) {
     prepareDrag: (spec) => call('prepareDrag', spec),
     startDrag: (spec) => { call('startDrag', spec).catch(() => {}) },
     pickFolder: () => call('pickFolder'),
+    saveSessionDialog: (name) => call('saveSessionDialog', name),
+    openSessionDialog: () => call('openSessionDialog'),
     exportToFolder: (spec) => call('exportToFolder', spec),
     download: (req) => call('download', req),
     showItemInFolder: (p) => { call('showItemInFolder', p).catch(() => {}) },

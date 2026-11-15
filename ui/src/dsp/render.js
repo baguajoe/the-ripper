@@ -43,8 +43,8 @@ export function renderBeat(sources, prog, pass, { sr = sources.main.sr, tail = 0
   for (const [id, s] of Object.entries(sources)) eng.setSource(id, s.channels, s.sr)
   const tr = new Transport(eng)
   applyProgram(eng, tr, prog)
-  const events = solo ? pass.events.filter((e) => solo.includes(`${e.bank}:${e.pad}`)) : pass.events
-  tr.setPass({ ...pass, events }, false)
+  if (solo) eng.solo = new Set(solo) // every pad still triggers (mono / choke cuts happen); only these are heard
+  tr.setPass(pass, false)
   tr.play(0)
   return eng.render(tr.passFrames + Math.max(0, Math.round(tail * sr)))
 }

@@ -305,6 +305,38 @@ ratio, `key` = old key + semitones. What the analyser detected is kept in `analy
 (`detected_bpm`, `detected_key`, `ratio`, `semitones`, `from`). The editor opens the new track
 with the old chops / pads / patterns, times × ratio.
 
+### 4.9 Beat exports (v1.2)
+
+Export bodies (`POST /tracks/<id>/export`, `/render` with `kind: "beat"`) may carry:
+
+* `items: [{clip, prefix, name, folder?, loop?}]` — audio the pad engine rendered (4.2): the
+  **beat** (`prefix: "beat"`, name = pattern id or `song`) and **pad stems** (`prefix: "pad01"…`,
+  numbered `bank × 16 + pad + 1`, name = the pad's name). Every file of one export has the same
+  length — the pass plus the longest effect tail — and starts at bar 1. A pad stem is rendered
+  with every pad still triggering (so mono / choke cuts happen) but only that pad heard, so with
+  the master bus off the stems sum exactly to the beat. Written resampled, never trimmed or
+  normalised; ACID loop flag when there's no tail.
+* `midi_items: [{data_b64, prefix, name, folder?}]` — the sequencer's MIDI file (4.4).
+* `positioned: {start, end, slices, folder?}` — **chops in original position**: per slice a WAV
+  of `[start, end)` that is silent except for that slice's source audio where it was (no pad
+  shaping), named `…_slice01_<name>.wav` in time order. Contiguous slices sum back to the source.
+
+File names: `{track}_{bpm}bpm_{key}_{prefix}_{name}.wav|.mid`. Kits put them in `Beat/`,
+`Beat/Pad stems/`, `MIDI/` (every pattern + the song) and `Chops in place/` (the bank's chop
+region; skipped in kits above ~10 minutes of total audio).
+
+### 4.10 Sessions (v1.2)
+
+A `.ripper` file is a zip: `session.json` + `audio/source.flac` (+ `audio/stems/<name>.flac`),
+FLAC 24-bit. `session.json`: `{format: "the-ripper-session", version, app_version, saved,
+track: {id, title, duration, sr, analysis}, stems, stems_meta, state}`. `state` is the editor's
+(`{version: 2, source, program: {banks, seq, master}, editor: {bank, selection, chop, trimOpts,
+sideTab, seqOpts, beatOpts}, export}`), migrated by `ui/src/lib/session.js` (v1 = the bare
+pad program). `POST /sessions/save {track_id, state, path | autosave: true}`;
+`POST /sessions/open {path}` → `{track, state}` (re-opening the same file reuses its track).
+Saved sessions' tracks are pinned and never cleaned up; autosaves of unsaved work go to
+`<app data>/autosave/<track id>.ripper`.
+
 ### 4.5 MIDI controllers (v1.2)
 
 Web MIDI inputs (any device) plus virtual inputs. Note-ons hit pads with their velocity;

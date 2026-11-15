@@ -53,6 +53,7 @@ class RipperEngineProcessor extends AudioWorkletProcessor {
         this.capture = { from, chunks: [], frames: 0, until: from + this.transport.passFrames, maxTail: Math.round((m.maxTail ?? 6) * sampleRate), quiet: 0 }
         break
       }
+      case 'ping': this.port.postMessage({ type: 'pong', id: m.id, t: currentFrame / sampleRate }); break
       case 'traceFires': this.fired = m.on ? [] : null; break
       case 'getFires': this.port.postMessage({ type: 'fires', fires: this.fired || [] }); break
       case 'off': eng.noteOff(m.bank, m.pad, this.frameOf(m.at)); break

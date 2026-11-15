@@ -43,11 +43,11 @@ export default function StartupScreen({ status, host, onRetry }) {
             message to us. It contains the app version, your OS, which tools were found and the engine log.
           </p>
           <div className="startup-actions">
-            <button className="btn btn-primary" onClick={onRetry} data-testid="startup-retry">Try again</button>
+            <button className="btn btn-primary" onClick={onRetry} data-testid="startup-retry" title="Try starting the audio engine again">Try again</button>
             {host.capabilities.diagnostics && (
-              <button className="btn" onClick={copy} data-testid="startup-copy-diagnostics">{copied ? 'Copied ✓' : 'Copy diagnostics'}</button>
+              <button className="btn" onClick={copy} data-testid="startup-copy-diagnostics" title="Copy details for a support request">{copied ? 'Copied ✓' : 'Copy diagnostics'}</button>
             )}
-            {host.capabilities.diagnostics && <button className="btn" onClick={() => host.openLogFolder()}>Open log folder</button>}
+            {host.capabilities.diagnostics && <button className="btn" title="Open the folder with the app and engine logs" onClick={() => host.openLogFolder()}>Open log folder</button>}
           </div>
           {err.message && (
             <details className="startup-details">

@@ -70,6 +70,7 @@ function appEnv(dirs, extra = {}) {
     RIPPER_EXPORT_DIR: dirs.exports,
     RIPPER_ENGINE_NEW: '1',
     RIPPER_ALLOW_ELEVATED: '1', // CI runners are admin; don't relaunch through Explorer
+    RIPPER_SKIP_TOUR: '1', // the first-run tour (tested on its own in polish.e2e.spec.js)
     TEMP: dirs.temp, TMP: dirs.temp, TMPDIR: dirs.temp, // Electron's temp (drag files) under "J. Test"
     ...extra,
   }

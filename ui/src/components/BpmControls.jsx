@@ -14,10 +14,10 @@ export default function BpmControls({ analysis, onApply, busy }) {
       <label className="bpm-field">
         <input className="input input-bpm" value={shown} onChange={(e) => setDraft(e.target.value)}
           onKeyDown={(e) => e.key === 'Enter' && dirty && apply({ bpm: Number(draft) })}
-          data-testid="bpm-input" aria-label="BPM" />
+          data-testid="bpm-input" title="Tempo in BPM — type the exact value and Apply to re-grid" aria-label="BPM" />
         <span className="muted">BPM</span>
       </label>
-      {dirty && <button className="btn btn-small btn-primary" onClick={() => apply({ bpm: Number(draft) })} disabled={busy} data-testid="bpm-apply">Apply</button>}
+      {dirty && <button className="btn btn-small btn-primary" onClick={() => apply({ bpm: Number(draft) })} disabled={busy} data-testid="bpm-apply" title="Apply this tempo (re-grids the track)">Apply</button>}
       <button className="btn btn-small" onClick={() => apply({ bpm: bpm / 2 })} disabled={busy} data-testid="bpm-half" title="Half time">½</button>
       <button className="btn btn-small" onClick={() => apply({ bpm: bpm * 2 })} disabled={busy} data-testid="bpm-double" title="Double time">×2</button>
       <button className="btn btn-small" onClick={() => { const v = tapper.tap(); if (v) setDraft(String(v)) }} data-testid="bpm-tap" title="Tap tempo">TAP</button>

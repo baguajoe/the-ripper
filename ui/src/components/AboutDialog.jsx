@@ -33,7 +33,7 @@ export default function AboutDialog({ host, health, onClose }) {
       <div className="modal" onClick={(e) => e.stopPropagation()} role="dialog" aria-label="About The Ripper">
         <div className="modal-head">
           <div className="startup-brand"><span className="brand-mark">◢◤</span> THE RIPPER</div>
-          <button className="btn btn-small" onClick={onClose} aria-label="Close">✕</button>
+          <button className="btn btn-small" onClick={onClose} aria-label="Close" title="Close">✕</button>
         </div>
         <dl className="about-grid">
           <dt>Version</dt>
@@ -50,8 +50,8 @@ export default function AboutDialog({ host, health, onClose }) {
         </dl>
         {host.capabilities.diagnostics && (
           <div className="startup-actions">
-            <button className="btn" onClick={copy} data-testid="about-copy-diagnostics">{copied ? 'Copied ✓' : 'Copy diagnostics'}</button>
-            <button className="btn" onClick={() => host.openLogFolder()}>Open log folder</button>
+            <button className="btn" onClick={copy} data-testid="about-copy-diagnostics" title="Copy app + engine details for a support request">{copied ? 'Copied ✓' : 'Copy diagnostics'}</button>
+            <button className="btn" title="Open the folder with the app and engine logs" onClick={() => host.openLogFolder()}>Open log folder</button>
           </div>
         )}
       </div>

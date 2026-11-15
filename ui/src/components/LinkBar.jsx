@@ -19,10 +19,10 @@ export default function LinkBar({ onSubmit, busy }) {
         placeholder="Paste a link (YouTube, SoundCloud, Bandcamp, direct audio URL…)"
         value={url}
         onChange={(e) => setUrl(e.target.value)}
-        data-testid="link-input"
+        data-testid="link-input" title="Paste a YouTube / SoundCloud / Bandcamp / audio link"
         spellCheck={false}
       />
-      <button className="btn btn-primary" type="submit" disabled={busy || !url.trim()} data-testid="link-import">Rip</button>
+      <button className="btn btn-primary" type="submit" disabled={busy || !url.trim()} data-testid="link-import" title="Import the link">Rip</button>
       <div className="linkbar-note" data-testid="rights-note">Only import content you own or have rights to.</div>
       {noJs && (
         <div className="linkbar-note linkbar-warn" data-testid="link-js-warning">
