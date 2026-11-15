@@ -65,6 +65,8 @@ test('selection chopping, banks, undo/redo, sampler pads', async () => {
   await expect(count()).toHaveText('16 slices')
   await expect(win.getByTestId('bank-info')).toContainText('Bank A · Even 16')
   await expect(win.getByTestId('selection-info')).toContainText('4 bars')
+  // the re-chop at the typed tempo lands asynchronously (the count is 16 before and after it)
+  await expect.poll(async () => { const x = await sliceTimes(); return Math.abs(x[15][1] - x[0][0] - 4 * BAR) }).toBeLessThan(0.0005)
   let t = await sliceTimes()
   const D = t[0][0] // bar 1 (the detected downbeat, a few ms in)
   expect(D).toBeLessThan(BAR / 8)
