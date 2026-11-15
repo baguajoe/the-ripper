@@ -5,6 +5,7 @@ import { api } from '../api.js'
 import { isShaped } from '../dsp/params.js'
 import { renderPad, planarBytes } from '../dsp/render.js'
 import { getPitched } from './pitched.js'
+import { Vintage } from '../dsp/vintage.js'
 
 const sources = new Map() // `${trackId}:${source}` -> {sr, channels}
 const cache = new Map() // render key -> {id?: string, promise}
@@ -22,7 +23,10 @@ const RENDER_FIELDS = ['source', 'start', 'end', 'reverse', 'gain', 'fadeIn', 'f
 const keyOf = (trackId, s) => JSON.stringify([trackId, ...RENDER_FIELDS.map((k) => s[k] ?? null)])
 
 /** Render hooks the later phases add (bank vintage, effects tails). */
-export const renderHooks = { bankFx: () => null, tail: () => 0 }
+export const renderHooks = {
+  bankFx: (s, sr) => (s.vintage && s.vintage !== 'off' ? new Vintage(sr, s.vintage) : null),
+  tail: () => 0,
+}
 
 async function renderAndUpload(trackId, s) {
   const src = sources.get(`${trackId}:${s.source || 'mix'}`)

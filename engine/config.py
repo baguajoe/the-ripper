@@ -66,6 +66,8 @@ FEATURES = {
     "batch_export": True,    # more than one slice in one export / folder export
     "export_kit": True,      # zip/drag with stems and/or MIDI
     "single_export": False,  # one slice or one stem
+    "patterns_beyond_b": True,  # sequencer patterns C-H
+    "vintage": True,         # vintage 12-bit / 16-bit bank character
 }
 
 MAX_UPLOAD_BYTES = 200 * 1024 * 1024          # audio files

@@ -19,7 +19,7 @@ const UI_DIST = process.env.RIPPER_UI_DIST
   || (app.isPackaged ? path.join(process.resourcesPath, 'ui') : path.join(REPO_ROOT, 'ui', 'dist'))
 const APP_ORIGIN = 'ripper://app'
 const DRAG_ROOT = path.join(app.getPath('temp'), 'TheRipper-drag')
-const SETTINGS_KEYS = new Set(['exportOptions', 'exportFolder', 'downloadFolder'])
+const SETTINGS_KEYS = new Set(['exportOptions', 'exportFolder', 'downloadFolder', 'midiMap', 'audio', 'recentSessions', 'tourDone'])
 
 protocol.registerSchemesAsPrivileged([
   { scheme: 'ripper', privileges: { standard: true, secure: true, supportFetchAPI: true, corsEnabled: true, stream: true } },

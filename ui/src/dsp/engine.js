@@ -10,6 +10,8 @@
 import { Voice } from './voice.js'
 
 export const BANKS = 8
+export const AUX = BANKS // the metronome bus: no bank processing
+const BUSES = BANKS + 1
 
 export class Engine {
   constructor(sampleRate) {
@@ -89,16 +91,16 @@ export class Engine {
   _ensure(n) {
     if (n <= this.cap) return
     this.cap = n
-    this.busL = Array.from({ length: BANKS }, () => new Float32Array(n))
-    this.busR = Array.from({ length: BANKS }, () => new Float32Array(n))
+    this.busL = Array.from({ length: BUSES }, () => new Float32Array(n))
+    this.busR = Array.from({ length: BUSES }, () => new Float32Array(n))
   }
 
   /** Render n frames, ADDING into L and R (Float32Arrays, at offset `at`). */
   process(L, R, n, at = 0) {
     this.onBlock?.(this.frame, n) // the sequencer schedules this block's events here
     this._ensure(n)
-    const used = new Array(BANKS).fill(false)
-    for (let b = 0; b < BANKS; b++) { this.busL[b].fill(0, 0, n); this.busR[b].fill(0, 0, n) }
+    const used = new Array(BUSES).fill(false)
+    for (let b = 0; b < BUSES; b++) { this.busL[b].fill(0, 0, n); this.busR[b].fill(0, 0, n) }
     const end = this.frame + n
     let f = this.frame
     while (f < end) {
@@ -113,8 +115,8 @@ export class Engine {
     const before = this.voices.length
     this.voices = this.voices.filter((v) => !v.done)
     if (this.voices.length !== before) for (const fn of this.listeners) fn({ type: 'end' })
-    for (let b = 0; b < BANKS; b++) {
-      const fx = this.bankFx[b]
+    for (let b = 0; b < BUSES; b++) {
+      const fx = b < BANKS ? this.bankFx[b] : null
       if (fx && (used[b] || fx.tail?.())) fx.process(this.busL[b], this.busR[b], n)
       else if (!used[b]) continue
       const bl = this.busL[b]

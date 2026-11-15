@@ -236,6 +236,48 @@ as usual. Clips live in `<storage>/.clips/` and are deleted after 24 h.
 
 Stems in kits are exported full length, not normalised, `num_beats = round(dur·bpm/60)`, loop flag.
 
+### 4.3 Vintage banks (v1.2)
+
+A bank's `vintage` (`off` | `12bit` | `16bit`) runs on that bank's bus (every pad of the bank,
+live, in the sequencer and in exports — a pad in a vintage bank exports as a clip, 4.2):
+
+* `12bit`: 4th-order low-pass at 0.45 × 40 kHz → sample-and-hold at 40 kHz → round to 12 bits
+  (±2047) → the same low-pass again.
+* `16bit`: low-pass at 15 kHz → `tanh(1.6x)/tanh(1.6)` saturation → round to 16 bits.
+
+Both end in a soft limiter above 0.9 (never reaches 1.0), and run on every sample (idle or not)
+so a render doesn't depend on block boundaries.
+
+### 4.4 Step sequencer (v1.2)
+
+Saved with the pad program as `seq`: `{patterns: {A..H: {steps: 16|32|64, notes: [{bank, pad,
+tick, vel, len}], accents: [step]}}, current, song: [pattern id], mode: 'pattern'|'song',
+swing: 50..75}`.
+
+* Ticks at **960 PPQ** (a 16th = 240). A step's notes are those with `round(tick/240)` = step.
+* **Swing** S%: each 8th (480 ticks) is warped piecewise-linearly so its second 16th lands at
+  `S/100 × 480`; swung ticks are rounded to whole ticks. Accented steps play at velocity 127.
+* A **pass** is the current pattern, or the song's patterns back to back; event time =
+  `start + round(tick × 60 / (bpm × 960) × sr)` samples (each pass computed from absolute ticks,
+  so loops never drift). Note-on pads are released at `tick + len`.
+* **Recording** un-swings the played position, quantizes it (off / 480 / 240 / 120 ticks) and
+  wraps it into the pattern. One recording take = one undo step. Overdub off = the take replaces
+  the pattern.
+* **Note repeat** (1/8 = 480, 1/16 = 240, 1/32 = 120, 1/8T = 320, 1/16T = 160 ticks): on the
+  swung grid while playing, free-running from the press while stopped.
+* **Count-in**: one bar of clicks; the metronome clicks every beat (accent on the bar).
+
+**MIDI file** of a pass: type 1, 960 PPQ, track 1 = tempo + 4/4 + name, track 2 = notes on
+channel 10, note = `36 + bank × 16 + pad` (C1 = bank A pad 1), the pass's exact ticks and
+velocities (swing + accents applied).
+
+### 4.5 MIDI controllers (v1.2)
+
+Web MIDI inputs (any device) plus virtual inputs. Note-ons hit pads with their velocity;
+default notes 36–51 = pads 1–16 of the current bank. MIDI learn maps a note to a pad, or a
+note / CC to Play, Stop or Record; the map is saved in the app settings (`midiMap`:
+`{pads: {"n60": 5}, buttons: {play: "c20"}}`).
+
 ## 5. WAV + ACID chunk
 
 * PCM 24-bit little-endian, stereo, 44,100 or 48,000 Hz, written by libsndfile (`PCM_24`).

@@ -1,6 +1,8 @@
 // Offline rendering with the same engine the pads play through (exports, resample, tests).
 import { Engine } from './engine.js'
 import { Voice } from './voice.js'
+import { Transport } from './transport.js'
+import { applyProgram } from './program.js'
 
 /** Output frames a slice plays for (tune changes speed; keep-length pads keep their length). */
 export function voiceFrames(source, slice, sr, pitched = null) {
@@ -28,4 +30,20 @@ export function planarBytes([L, R]) {
   out.set(L, 0)
   out.set(R, L.length)
   return out.buffer
+}
+
+/**
+ * The beat, offline: one pass (lib/sequence.js passEvents + bpm + swing) through the program,
+ * no loop. sources: {id: {channels, sr}} ('main' = the track). solo: only these "bank:pad" keys.
+ * Returns [L, R] of the pass length + tail seconds.
+ */
+export function renderBeat(sources, prog, pass, { sr = sources.main.sr, tail = 0, solo = null } = {}) {
+  const eng = new Engine(sr)
+  for (const [id, s] of Object.entries(sources)) eng.setSource(id, s.channels, s.sr)
+  const tr = new Transport(eng)
+  applyProgram(eng, tr, prog)
+  const events = solo ? pass.events.filter((e) => solo.includes(`${e.bank}:${e.pad}`)) : pass.events
+  tr.setPass({ ...pass, events }, false)
+  tr.play(0)
+  return eng.render(tr.passFrames + Math.max(0, Math.round(tail * sr)))
 }
