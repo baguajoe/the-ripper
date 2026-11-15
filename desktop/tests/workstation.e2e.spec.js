@@ -153,6 +153,10 @@ test('sessions: save / open round-trips every setting; autosave; an older sessio
   await expect.poll(() => fs.statSync(file).mtimeMs).toBeGreaterThan(m0)
   await tap(8, 1) // back to the saved pattern
   await win.getByTestId('session-save').click()
+  // let the save finish before quitting (a request cut off by the quit is an error in the console)
+  await expect(win.getByTestId('session-save')).not.toContainText('•', { timeout: 60_000 })
+  await expect(win.getByTestId('toast-success').filter({ hasText: 'My Beat. v1.ripper' }).last()).toBeVisible()
+  await win.waitForTimeout(500)
 
   // restart, open it (Ctrl+O): everything comes back
   await app.close()

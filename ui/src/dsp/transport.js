@@ -84,6 +84,11 @@ export class Transport {
     if (!this.recording) return
     const p = this.position(frame)
     if (p) this.onHit?.({ bank, pad, vel, tick: p.tick, pass: p.pass })
+    // a hit up to a 16th before the first beat (right after Record / the count-in) still counts:
+    // a negative tick, which quantizing pulls onto the downbeat
+    else if (this.playing && frame < this.start && this.start - frame <= this.frameOfTick(PPQ / 4)) {
+      this.onHit?.({ bank, pad, vel, tick: this.tickOfFrame(frame - this.start), pass: 0 })
+    }
   }
 
   /** Note repeat while a pad is held: r = {bank, pad, vel, rate (ticks)} or null to stop. */

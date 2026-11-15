@@ -111,6 +111,25 @@ describe('sequencer timing (rendered through the engine)', () => {
   })
 })
 
+describe('live record', () => {
+  it('reports hits with their position; a hit just before the first beat counts', () => {
+    const eng = new Engine(SR)
+    eng.setSource('main', impulses().channels, SR)
+    const tr = new Transport(eng)
+    tr.setProgram(program(impulsePads()))
+    tr.setPass({ events: [], length: 16 * STEP, bpm: 120, swing: 50 }, true)
+    const hits = []
+    tr.onHit = (h) => hits.push(h)
+    tr.play(1000)
+    tr.recording = true
+    tr.hit(0, 1, 90, 1000 - 441) // 10 ms early
+    tr.hit(0, 2, 90, 1000 + Math.round(0.25 * SR)) // on the 3rd 16th (120 BPM)
+    tr.hit(0, 3, 90, 1000 - Math.round(0.2 * SR)) // too early: ignored
+    expect(hits.map((h) => [h.pad, Math.round(h.tick)])).toEqual([[1, -19], [2, 480]])
+    expect(addHit(emptySeq().patterns.A, { bank: 0, pad: 1, tick: -19, vel: 90 }, '1/16').notes[0].tick).toBe(0)
+  })
+})
+
 describe('note repeat', () => {
   for (const [name, rate] of Object.entries(REPEAT_RATES)) {
     it(`${name} repeats at its rate (free-running and on the grid)`, () => {
