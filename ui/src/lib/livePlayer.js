@@ -1,0 +1,91 @@
+// Main-thread side of the live pad engine (src/dsp/worklet.js): sends sources and triggers,
+// tracks the voice count the worklet reports. Same API as v1.1's SlicePlayer.
+import workletUrl from '../dsp/worklet.js?worker&url'
+import { Engine } from '../dsp/engine.js'
+import { renderPad } from '../dsp/render.js'
+
+const loaded = new WeakMap() // AudioContext -> Promise (module added)
+
+export class LivePlayer {
+  /** Resolves a player on `ctx` (adds the worklet module once per context). */
+  static async create(ctx) {
+    if (!loaded.has(ctx)) loaded.set(ctx, ctx.audioWorklet.addModule(workletUrl))
+    await loaded.get(ctx)
+    return new LivePlayer(ctx)
+  }
+
+  constructor(ctx) {
+    this.ctx = ctx
+    this.node = new AudioWorkletNode(ctx, 'ripper-engine', { numberOfInputs: 0, numberOfOutputs: 1, outputChannelCount: [2] })
+    this.node.connect(ctx.destination)
+    this.status = { playing: 0, triggered: 0, frame: 0 }
+    this.triggered = 0
+    this.pitched = new Set()
+    this.listeners = new Set()
+    this.node.port.onmessage = (e) => {
+      const m = e.data
+      if (m.type === 'status') this.status = m
+      for (const fn of this.listeners) fn(m)
+    }
+    if (typeof window !== 'undefined') window.__ripperTest = { ...(window.__ripperTest || {}), player: this }
+  }
+
+  post(msg, transfer) { this.node.port.postMessage(msg, transfer || []) }
+
+  on(fn) { this.listeners.add(fn); return () => this.listeners.delete(fn) }
+
+  /** The source the pads play from: {sr, channels} (copied into the worklet). */
+  setSource(src, id = 'main') {
+    this.stopAll()
+    const channels = src.channels.map((c) => c.slice())
+    this.post({ type: 'source', id, sr: src.sr, channels }, channels.map((c) => c.buffer))
+  }
+
+  /** A keep-length pad's pitch-shifted copy, under its cache key. */
+  setPitched(key, src) {
+    if (this.pitched.has(key)) return
+    this.pitched.add(key)
+    this.setSourceOnly(`p:${key}`, src)
+  }
+
+  setSourceOnly(id, src) {
+    const channels = src.channels.map((c) => c.slice())
+    this.post({ type: 'source', id, sr: src.sr, channels }, channels.map((c) => c.buffer))
+  }
+
+  resume() {
+    if (this.ctx.state !== 'running') this.ctx.resume()
+  }
+
+  /** Trigger a slice. opts: {bank, pad, mono, vel, when (ctx time), pitchedKey}. */
+  play(slice, { bank = 0, pad = -1, mono = false, vel = 127, when, pitchedKey = null } = {}) {
+    if (!slice) return
+    this.resume()
+    this.triggered++
+    this.post({ type: 'on', slice: plain(slice), bank, pad, mono, vel, at: when,
+      pitched: pitchedKey && this.pitched.has(pitchedKey) ? `p:${pitchedKey}` : null })
+    if (typeof window !== 'undefined') {
+      window.__ripperDebug = { ...(window.__ripperDebug || {}), padsTriggered: this.triggered, audioState: this.ctx.state }
+    }
+  }
+
+  release(bank, pad, when) { this.post({ type: 'off', bank, pad, at: when }) }
+
+  stopAll(when) { this.post({ type: 'stop', at: when }) }
+
+  get playing() { return this.status.playing }
+
+  dispose() {
+    try { this.node.disconnect() } catch { /* already */ }
+    this.node.port.onmessage = null
+  }
+}
+
+/** Only the fields the engine reads (no functions / React state). */
+function plain(s) {
+  const { start, end, reverse, gain, fadeIn, fadeOut, choke, padMode, tune, fine, keepLength, env, filter, velVol, velFilter, pan, fx } = s
+  return { start, end, reverse, gain, fadeIn, fadeOut, choke, padMode, tune, fine, keepLength, env, filter, velVol, velFilter, pan, fx }
+}
+
+// e2e: tests render the app's own engine offline (the mono-choke test, shaping renders).
+if (typeof window !== 'undefined') window.__ripperTest = { ...(window.__ripperTest || {}), Engine, renderPad }

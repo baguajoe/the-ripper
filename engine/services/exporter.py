@@ -110,6 +110,7 @@ class Slice:
     fade_in: float = 0.0          # seconds
     fade_out: float = 0.0         # seconds
     source: str = "mix"           # 'mix' or a stem name
+    clip: str | None = None       # id of a rendered clip (shaped pad audio) to use instead of cutting
     extra: dict = field(default_factory=dict)
 
     @classmethod
@@ -123,7 +124,8 @@ class Slice:
                    gain=float(d.get("gain", 0.0) or 0.0),
                    fade_in=max(0.0, float(d.get("fade_in", 0.0) or 0.0)),
                    fade_out=max(0.0, float(d.get("fade_out", 0.0) or 0.0)),
-                   source=str(d.get("source") or "mix"))
+                   source=str(d.get("source") or "mix"),
+                   clip=str(d["clip"]) if d.get("clip") else None)
 
 
 def beats_in(seconds: float, bpm: float) -> int:
@@ -158,6 +160,31 @@ def render_slice(audio: np.ndarray, sr: int, sl: Slice, opts: ExportOptions, bpm
         seg = seg * (10 ** (sl.gain / 20.0))
     seg = np.ascontiguousarray(seg)
     apply_fades(seg, sr, sl.fade_in, sl.fade_out)
+    return _finish(seg, sr, opts, bpm, num_beats)
+
+
+def render_clip(clip: np.ndarray, sr: int, opts: ExportOptions, bpm: float) -> tuple[np.ndarray, int, int]:
+    """A clip the UI's pad engine rendered (reverse, gain, fades, tune, envelope, filter, pan and
+    effects already applied): the same packaging as a cut slice (docs/formats.md#rendered-clips)."""
+    seg = clip.astype(np.float32, copy=True)
+    dur = seg.shape[1] / sr
+    if opts.mode == "loop":
+        num_beats = max(1, beats_in(dur, bpm))
+        length = int(round(num_beats * 60.0 / bpm * sr))
+        seg = seg[:, :length] if seg.shape[1] >= length else np.pad(seg, ((0, 0), (0, length - seg.shape[1])))
+    else:
+        num_beats = beats_in(dur, bpm)
+        if opts.trim_silence and seg.shape[1] > 0:
+            import librosa
+            _, (i0, i1) = librosa.effects.trim(seg.mean(axis=0), top_db=TRIM_TOP_DB)
+            if i1 > i0:
+                seg = seg[:, i0:i1]
+    return _finish(np.ascontiguousarray(seg), sr, opts, bpm, num_beats)
+
+
+def _finish(seg: np.ndarray, sr: int, opts: ExportOptions, bpm: float, num_beats: int
+            ) -> tuple[np.ndarray, int, int]:
+    """resample -> [loop: exact tempo-locked length] -> normalize -> clip."""
     out_sr = int(opts.sr)
     if out_sr != sr:
         import librosa
@@ -254,10 +281,16 @@ def build_kit(*, title: str, bpm: float, key: str | None, sources: dict[str, tup
     loop = opts.mode == "loop"
     s_dir, st_dir, m_dir = ("Slices/", "Stems/", "MIDI/") if folders else ("", "", "")
     for sl in slices:
-        if sl.source not in sources:
-            raise ValueError(f"unknown source '{sl.source}'")
-        audio, sr = sources[sl.source]
-        data, beats, out_sr = render_slice(audio, sr, sl, opts, bpm)
+        if sl.clip:
+            if f"clip:{sl.clip}" not in sources:
+                raise ValueError(f"unknown clip '{sl.clip}'")
+            audio, sr = sources[f"clip:{sl.clip}"]
+            data, beats, out_sr = render_clip(audio, sr, opts, bpm)
+        else:
+            if sl.source not in sources:
+                raise ValueError(f"unknown source '{sl.source}'")
+            audio, sr = sources[sl.source]
+            data, beats, out_sr = render_slice(audio, sr, sl, opts, bpm)
         files.append(KitFile(s_dir + build_filename(title, bpm, key, sl.name),
                              wav_bytes(data, out_sr, bpm, beats, loop)))
     for name, (audio, sr) in (stems or {}).items():

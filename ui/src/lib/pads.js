@@ -1,4 +1,4 @@
-// 4x4 MPC-style pad grid. Rows top->bottom: 1234 / QWER / ASDF / ZXCV.
+// 4x4 pad grid. Rows top->bottom: 1234 / QWER / ASDF / ZXCV.
 export const PAD_KEYS = ['1', '2', '3', '4', 'q', 'w', 'e', 'r', 'a', 's', 'd', 'f', 'z', 'x', 'c', 'v']
 export const PADS_PER_BANK = 16
 export const BANKS = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H']

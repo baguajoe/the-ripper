@@ -172,7 +172,7 @@ zips, the add-on parts and `ripper-ai-manifest.json`.
    size re-chops right away; Ctrl/Cmd+Z / Ctrl/Cmd+Shift+Z undo / redo any chop, slice edit or
    bank change. Nothing is shorter than 50 ms; a pickup shorter than half a beat before bar 1
    merges into the first slice.
-5. **Pads** — like an MPC: 8 banks (A–H) of 16, keys `1234 / QWER / ASDF / ZXCV` (`S` is pad 10
+5. **Pads** — like a classic hardware sampler: 8 banks (A–H) of 16, keys `1234 / QWER / ASDF / ZXCV` (`S` is pad 10
    except in Manual mode). Per bank *Mono (chops cut each other)* (default) or Poly; *Choke all /
    Unchoke all*. Per pad: One-shot / Note-on (plays while held), rename, reverse, gain, fades,
    choke. `Esc` or *Stop* stops everything.
@@ -180,7 +180,7 @@ zips, the add-on parts and `ripper-ai-manifest.json`.
    or Fast (no AI): Drums / Bass / Music, or Instrumental (center cancel). Click a stem's name to
    hear it alone; solo/mute/volume; download; *Send to Chop Editor*.
 7. **To the DAW** — the current bank is the kit: drag any pad, slice handle `⠿`, stem, the **KIT** chip (all files) or the
-   **MIDI** chip straight into FL Studio / Ableton / Logic / Studio One / MPC or the desktop. Or
+   **MIDI** chip straight into FL Studio / Ableton / Logic / Studio One / your sampler or the desktop. Or
    *Export Kit (.zip)* (saved to Downloads), *Slices → folder…*, *Kit → folder…* (remembered).
 
 Shortcuts: `Space` play/pause · `L` loop (selected slice, the selection or 1 bar) · `Esc` stop

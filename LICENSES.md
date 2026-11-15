@@ -90,6 +90,21 @@ So the weights have no clear licence, and the 6-stem model is likely non-commerc
 (CC BY-NC). That is why the app fetches them from the author's repositories instead of shipping
 them, and why this needs a decision before HQ (AI) stems become a paid feature.
 
+## Time-stretching and pitch-shifting (v1.2)
+
+Keep-length pad tuning and "fit the sample to my beat" (tempo / key) use
+**[Signalsmith Stretch](https://github.com/Signalsmith-Audio/signalsmith-stretch)**
+(MIT, Copyright (c) 2021-2022 Geraint Luff / Signalsmith Audio Ltd.) through the Python wrapper
+**[python-stretch](https://github.com/gregogiudici/python-stretch) 0.3.1** (MIT, Copyright (c)
+2024 Gregorio Andrea Giudici; built with nanobind, BSD-3-Clause). Both are compiled into one
+Python extension inside the bundled engine. MIT and BSD allow use in a closed-source, paid
+app; the only condition is shipping the notices, which the installers do in
+`licenses/signalsmith-stretch/` (copied from `licenses/signalsmith-stretch/` in this repository).
+
+**Not used:** Rubber Band Library — GPL-2.0-or-later unless a commercial licence is bought, so
+it can't go into a closed-source app for free. SoundTouch (LGPL-2.1, would have needed dynamic
+linking) was the fallback and wasn't needed.
+
 ## Other components
 
 The engine bundles Python packages (Flask, librosa, NumPy, SciPy, yt-dlp, …) under their

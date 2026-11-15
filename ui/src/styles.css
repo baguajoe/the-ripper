@@ -258,7 +258,7 @@ input[type=range] { accent-color: var(--accent); }
   .slices-panel .slice-list { max-height: 340px; }
 }
 
-/* --- v1.1.3: selection, banks, pads like an MPC ---------------------------------------------- */
+/* --- v1.1.3: selection, banks, sampler-style pads ---------------------------------------------- */
 .selection-bar { display: flex; align-items: center; gap: 8px; padding: 3px 12px; background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); }
 .selection-bar .seg-btn { padding: 3px 10px; }
 .selection-bar .btn-small { padding-top: 3px; padding-bottom: 3px; }
@@ -281,3 +281,39 @@ input[type=range] { accent-color: var(--accent); }
 .stem-name { background: none; border: none; color: var(--text); font: inherit; font-weight: 600; cursor: pointer; padding: 2px 6px; border-radius: 6px; min-width: 96px; text-align: left; }
 .stem-name:hover { background: var(--panel-2); }
 .stem-name-solo { color: var(--accent-2); }
+
+/* --- v1.2: pad shaping, trim editor, pad menu --------------------------------------------- */
+.pad { border-left: 4px solid var(--pad-color, transparent); }
+.pad-drop { outline: 2px dashed var(--accent-2); outline-offset: 2px; }
+.pad-flag-shaped { top: auto; bottom: 6px; right: 8px; color: var(--accent-2); }
+.pad-flag-hold ~ .pad-flag-shaped { right: 44px; }
+.side-tabs { display: flex; align-items: center; gap: 6px; }
+.side-tab { background: none; border: 1px solid transparent; color: var(--muted); font: inherit; font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; padding: 2px 8px; border-radius: 6px; cursor: pointer; }
+.side-tab-on { color: var(--text); border-color: var(--line); background: rgba(255,255,255,0.04); }
+.pad-panel { display: grid; gap: 8px; }
+.pad-panel-head { display: flex; align-items: center; gap: 8px; }
+.pad-swatch { width: 12px; height: 12px; border-radius: 3px; display: inline-block; }
+.shape-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 8px; }
+.shape-group { border: 1px solid var(--line); border-radius: 8px; padding: 6px 8px 8px; margin: 0; display: grid; gap: 4px; min-width: 0; }
+.shape-group legend { font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); padding: 0 4px; }
+.shape-row { display: grid; grid-template-columns: 52px 1fr 58px; align-items: center; gap: 6px; font-size: 11px; }
+.shape-row input[type=range] { width: 100%; min-width: 0; }
+.shape-label { color: var(--muted); }
+.shape-value { font: 11px ui-monospace, monospace; text-align: right; white-space: nowrap; }
+.env-view { color: var(--accent); width: 100%; height: 48px; }
+.seg-small .seg-btn { padding: 2px 8px; font-size: 11px; }
+.modal-backdrop { position: fixed; inset: 0; background: rgba(0,0,0,0.55); display: flex; align-items: center; justify-content: center; z-index: 100; }
+.modal { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 14px; width: min(1100px, calc(100vw - 32px)); max-height: calc(100vh - 32px); overflow: auto; display: grid; gap: 10px; }
+.modal-head { display: flex; align-items: center; gap: 12px; }
+.modal-head .muted { flex: 1; }
+.trim-canvas-wrap { width: 100%; }
+.trim-canvas-wrap canvas { display: block; border-radius: 8px; cursor: ew-resize; touch-action: none; }
+.trim-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+.input-time { width: 84px; font-family: ui-monospace, monospace; }
+.trim-active { color: var(--accent-2); }
+.pad-menu { position: fixed; z-index: 120; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 10px; width: 220px; display: grid; gap: 8px; box-shadow: 0 8px 24px rgba(0,0,0,0.5); }
+.pad-colors { display: flex; flex-wrap: wrap; gap: 6px; }
+.pad-color { width: 20px; height: 20px; border-radius: 5px; border: 1px solid rgba(255,255,255,0.2); cursor: pointer; padding: 0; color: var(--muted); font-size: 10px; background: none; }
+.pad-color-on { outline: 2px solid #fff; }
+.pad-menu-row { display: flex; flex-wrap: wrap; gap: 6px; }
+.pad-12 { padding: 12px; }

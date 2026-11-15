@@ -3,13 +3,14 @@ import { useNativeDrag } from '../hooks/useNativeDrag.js'
 import { dragSpec } from '../lib/exportSpec.js'
 import { formatTime } from '../lib/format.js'
 
-export default function SliceRow({ slice, index, selected, onSelect, onChange, onPlay, onDelete, onDownload, trackId, options }) {
+export default function SliceRow({ slice, index, selected, onSelect, onChange, onPlay, onDelete, onDownload, onTrim, trackId, options }) {
   const getSpec = useCallback(() => dragSpec(trackId, 'slice', { slices: [slice], options }), [slice, trackId, options])
   const drag = useNativeDrag(getSpec)
   const set = (patch) => onChange(slice.id, patch)
   return (
     <div className={`slice-row ${selected ? 'slice-row-selected' : ''}`} data-testid={`slice-row-${index}`}
-      data-start={slice.start} data-end={slice.end} data-padmode={slice.padMode || 'oneshot'} onClick={() => onSelect(slice.id)}>
+      data-start={slice.start} data-end={slice.end} data-pad={slice.pad} data-padmode={slice.padMode || 'oneshot'} onClick={() => onSelect(slice.id)}
+      onDoubleClick={(e) => { if (e.target.tagName !== 'INPUT' && e.target.tagName !== 'SELECT') onTrim?.() }}>
       <span className="drag-handle" title="Drag this slice into your DAW" data-testid={`slice-drag-${index}`} {...drag}>⠿</span>
       <button className="icon-btn" onClick={(e) => { e.stopPropagation(); onPlay(slice) }} data-testid={`slice-play-${index}`} title="Play">▶</button>
       <span className="slice-idx">{index + 1}</span>
@@ -32,6 +33,7 @@ export default function SliceRow({ slice, index, selected, onSelect, onChange, o
         <option value="oneshot">One-shot</option>
         <option value="noteon">Note-on</option>
       </select>
+      <button className="icon-btn" onClick={(e) => { e.stopPropagation(); onTrim?.() }} title="Trim (double-click)" data-testid={`slice-trim-${index}`}>✂</button>
       <button className="icon-btn" onClick={(e) => { e.stopPropagation(); onDownload(slice) }} title="Save WAV" data-testid={`slice-download-${index}`}>⤓</button>
       <button className="icon-btn" onClick={(e) => { e.stopPropagation(); onDelete(slice.id) }} title="Remove slice" data-testid={`slice-delete-${index}`}>✕</button>
     </div>

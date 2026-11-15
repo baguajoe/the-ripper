@@ -11,6 +11,8 @@ from __future__ import annotations
 import shutil
 from pathlib import Path
 
+import numpy as np
+
 from .. import config
 from ..jobs import JobError
 
@@ -147,8 +149,14 @@ def build_files(ctx, track_dir: str, spec: dict) -> dict:
         files = [exporter.KitFile(exporter.build_filename(title, bpm, key, "slices", "mid"),
                                   exporter.build_midi(slices, bpm, title, spec.get("downbeat")))]
     else:
+        from . import clips
         sources = {}
-        for src in {s.source for s in slices}:
+        for cid in {s.clip for s in slices if s.clip}:
+            try:
+                sources[f"clip:{cid}"] = clips.load(d.parent, cid)
+            except FileNotFoundError as exc:
+                raise JobError(str(exc))
+        for src in {s.source for s in slices if not s.clip}:
             p = d / "source.wav" if src == "mix" else d / "stems" / f"{src}.wav"
             if not p.exists():
                 raise JobError(f"No stem '{src}'")
@@ -167,6 +175,29 @@ def build_files(ctx, track_dir: str, spec: dict) -> dict:
     else:
         paths = exporter.write_files(files, Path(out["dir"]))
     return {"files": paths, "stems": made_stems}
+
+
+def pitch_slice(ctx, track_dir: str, source: str, start: float, end: float, semitones: float, out: str) -> dict:
+    """Keep-length tune: cut [start, end) from the source, transpose it (same length), write
+    planar float32 to `out`."""
+    import soundfile as sf
+
+    from . import stretch
+    d = Path(track_dir)
+    p = d / "source.wav" if source == "mix" else d / "stems" / f"{source}.wav"
+    info = sf.info(str(p))
+    sr = info.samplerate
+    a, b = int(round(start * sr)), int(round(start * sr)) + int(round((end - start) * sr))
+    data, _ = sf.read(str(p), start=a, stop=min(b, info.frames), dtype="float32", always_2d=True)
+    seg = data.T[:2]
+    if seg.shape[0] == 1:
+        seg = np.vstack([seg, seg])
+    if seg.shape[1] < b - a:
+        seg = np.pad(seg, ((0, 0), (0, b - a - seg.shape[1])))
+    shifted = stretch.pitch_shift(seg, sr, semitones)
+    Path(out).parent.mkdir(parents=True, exist_ok=True)
+    Path(out).write_bytes(np.ascontiguousarray(shifted, dtype="<f4").tobytes())
+    return {"sr": sr, "channels": int(shifted.shape[0]), "frames": int(shifted.shape[1])}
 
 
 def analyze_path(ctx, path: str) -> dict:

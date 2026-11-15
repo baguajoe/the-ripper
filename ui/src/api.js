@@ -114,6 +114,26 @@ export const api = {
     return res.arrayBuffer()
   },
 
+  /** Upload a rendered clip (planar float32). Resolves the clip id for an export slice. */
+  async uploadClip(planar, sr, channels = 2) {
+    const res = await engineFetch('/clips', {
+      method: 'POST', body: planar,
+      headers: { 'Content-Type': 'application/octet-stream', 'X-Ripper-SR': String(sr), 'X-Ripper-Channels': String(channels) },
+    })
+    if (!res.ok) throw new ApiError(res.status, ...(await res.json().then((e) => [e.error, e.detail]).catch(() => [])))
+    return (await res.json()).clip
+  },
+
+  /** A slice transposed with its length kept (keep-length tuning): {sr, channels: Float32Array[]}. */
+  async pitched(id, { start, end, semitones, source = 'mix' }) {
+    const res = await request(`/tracks/${id}/pitch`, { method: 'POST', body: { start, end, semitones, source }, raw: true })
+    const sr = Number(res.headers.get('X-Ripper-SR'))
+    const nch = Number(res.headers.get('X-Ripper-Channels')) || 2
+    const all = new Float32Array(await res.arrayBuffer())
+    const n = all.length / nch
+    return { sr, channels: Array.from({ length: nch }, (_, c) => all.slice(c * n, (c + 1) * n)) }
+  },
+
   /** Multipart upload with progress (0..1). Resolves {job_id, track_id}. */
   async upload(file, onProgress) {
     await engineSettled(20_000)
