@@ -15,7 +15,7 @@ export default function SliceRow({ slice, index, selected, onSelect, onChange, o
       <button className="icon-btn" onClick={(e) => { e.stopPropagation(); onPlay(slice) }} data-testid={`slice-play-${index}`} title="Play">▶</button>
       <span className="slice-idx">{index + 1}</span>
       <input className="input input-name" value={slice.name} onChange={(e) => set({ name: e.target.value })}
-        onClick={(e) => e.stopPropagation()} data-testid={`slice-name-${index}`} aria-label="Slice name" />
+        onClick={(e) => e.stopPropagation()} data-testid={`slice-name-${index}`} title="Slice name (used in the file name)" aria-label="Slice name" />
       <span className="slice-time muted">{formatTime(slice.start)}–{formatTime(slice.end)}</span>
       <label className="chk" title="Reverse"><input type="checkbox" checked={!!slice.reverse} onChange={(e) => set({ reverse: e.target.checked })} data-testid={`slice-reverse-${index}`} />Rev</label>
       <label className="num" title="Gain (dB)">Gain

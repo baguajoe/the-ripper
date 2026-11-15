@@ -10,7 +10,7 @@ function ProTag({ allowed }) {
 }
 
 /** Exports the current bank (a bank = a kit). Banks after A get their letter in the file names. */
-export default function ExportPanel({ track, slices, bank = 0, options, setOptions }) {
+export default function ExportPanel({ track, slices, bank = 0, options, setOptions, kitExtras }) {
   const { host, health, notify } = useApp()
   const [busy, setBusy] = useState(null)
   const [folder, setFolder] = useState(null)
@@ -43,7 +43,7 @@ export default function ExportPanel({ track, slices, bank = 0, options, setOptio
       const res = await host.download({
         path: `/tracks/${track.id}/export`,
         filename: `${kitBase}_Kit.zip`,
-        body: { ...options, slices: await apiSlices(track.id, slices), include_stems: true, include_midi: true },
+        body: { ...options, slices: await apiSlices(track.id, slices), include_stems: true, include_midi: true, ...(kitExtras ? await kitExtras() : {}) },
       })
       saved(res)
     } catch (e) {
@@ -57,7 +57,7 @@ export default function ExportPanel({ track, slices, bank = 0, options, setOptio
     setBusy(kind)
     try {
       const res = await host.exportToFolder({
-        trackId: track.id, kind, slices: await apiSlices(track.id, slices), options,
+        trackId: track.id, kind, slices: await apiSlices(track.id, slices), options, ...(kind === 'kit' && kitExtras ? await kitExtras() : {}),
         subfolder: `${kitBase}${kind === 'kit' ? '_Kit' : '_Slices'}`,
       })
       if (res) setFolder(res.folder)
@@ -76,31 +76,31 @@ export default function ExportPanel({ track, slices, bank = 0, options, setOptio
       <div className="export-options">
         <div className="seg">
           {['oneshot', 'loop'].map((m) => (
-            <button key={m} className={`seg-btn ${options.mode === m ? 'seg-on' : ''}`} onClick={() => set({ mode: m })} data-testid={`export-mode-${m}`}>
+            <button key={m} className={`seg-btn ${options.mode === m ? 'seg-on' : ''}`} onClick={() => set({ mode: m })} data-testid={`export-mode-${m}`} title={m === 'oneshot' ? 'Each slice exactly as cut' : 'Each slice tempo-locked to whole beats, as a loop'}>
               {m === 'oneshot' ? 'One-shots' : 'Bar loops'}
             </button>
           ))}
         </div>
-        <select className="input" value={options.sr} onChange={(e) => set({ sr: Number(e.target.value) })} data-testid="export-sr">
+        <select className="input" value={options.sr} onChange={(e) => set({ sr: Number(e.target.value) })} data-testid="export-sr" title="Sample rate of the exported WAVs">
           <option value={44100}>44.1 kHz</option>
           <option value={48000}>48 kHz</option>
         </select>
         <span className="muted small">24-bit WAV · tempo tag</span>
-        <label className="chk"><input type="checkbox" checked={options.normalize} onChange={(e) => set({ normalize: e.target.checked })} data-testid="export-normalize" />Normalize</label>
+        <label className="chk"><input type="checkbox" checked={options.normalize} onChange={(e) => set({ normalize: e.target.checked })} data-testid="export-normalize" title="Normalize each file to -0.3 dBFS" />Normalize</label>
         <label className="chk" title={options.mode === 'loop' ? 'Not applied to tempo-locked loops' : ''}>
           <input type="checkbox" checked={options.trim_silence} disabled={options.mode === 'loop'} onChange={(e) => set({ trim_silence: e.target.checked })} data-testid="export-trim" />Trim silence
         </label>
       </div>
       <div className="export-actions">
-        <button className="btn btn-primary" onClick={exportKit} disabled={none || !!busy || f.export_kit === false} data-testid="export-kit">
+        <button className="btn btn-primary" onClick={exportKit} disabled={none || !!busy || f.export_kit === false} data-testid="export-kit" title="Download the whole kit as a zip">
           {busy === 'kit' ? 'Exporting…' : 'Export Kit (.zip)'} <ProTag allowed={f.export_kit !== false} />
         </button>
         {host.capabilities.folders && (
           <>
-            <button className="btn" onClick={() => toFolder('slices')} disabled={none || !!busy || f.batch_export === false} data-testid="export-folder">
+            <button className="btn" onClick={() => toFolder('slices')} disabled={none || !!busy || f.batch_export === false} data-testid="export-folder" title="Write every slice of this bank into your export folder">
               Slices → folder… <ProTag allowed={f.batch_export !== false} />
             </button>
-            <button className="btn" onClick={() => toFolder('kit')} disabled={none || !!busy || f.export_kit === false} data-testid="export-kit-folder">
+            <button className="btn" onClick={() => toFolder('kit')} disabled={none || !!busy || f.export_kit === false} data-testid="export-kit-folder" title="Write the whole kit into your export folder">
               Kit → folder… <ProTag allowed={f.export_kit !== false} />
             </button>
             <button className="btn btn-small" onClick={changeFolder} title={folder || 'No folder chosen yet'} data-testid="export-folder-pick">
@@ -117,7 +117,7 @@ export default function ExportPanel({ track, slices, bank = 0, options, setOptio
           </div>
         )}
       </div>
-      <div className="muted small">Kit = all slices + stems (runs Fast stems if none yet) + MIDI (one note per slice from C1, original timing).</div>
+      <div className="muted small">Kit = all slices + stems (runs Fast stems if none yet) + MIDI (slice map + your patterns) + the beat, pad stems and chops in place.</div>
     </div>
   )
 }

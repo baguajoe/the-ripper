@@ -92,6 +92,9 @@ export const api = {
   getTrack: (id) => request(`/tracks/${id}`),
   patchTrack: (id, body) => request(`/tracks/${id}`, { method: 'PATCH', body }),
   deleteTrack: (id) => request(`/tracks/${id}`, { method: 'DELETE' }),
+  /** Session files: save {track_id, state, path | autosave: true} -> {path}; open {path} -> {track, state}. */
+  saveSession: (body) => request('/sessions/save', { method: 'POST', body }),
+  openSession: (path) => request('/sessions/open', { method: 'POST', body: { path } }),
   /** Fit to a tempo / key: a new track. Resolves {job_id, track_id, ratio, semitones}. */
   fitTrack: (id, body) => request(`/tracks/${id}/fit`, { method: 'POST', body }),
   retryTrack: (id) => request(`/tracks/${id}/retry`, { method: 'POST' }),

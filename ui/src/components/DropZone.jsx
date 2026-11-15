@@ -25,7 +25,7 @@ export default function DropZone() {
       <div className="dropzone-inner">
         <div className="dropzone-icon">⇣</div>
         <div><strong>Drop audio or video</strong> anywhere, or</div>
-        <button type="button" className="btn" onClick={() => input.current?.click()} data-testid="browse-files">Browse…</button>
+        <button type="button" className="btn" onClick={() => input.current?.click()} data-testid="browse-files" title="Pick audio or video files to import">Browse…</button>
         <div className="muted small">WAV or MP3 up to {MAX_AUDIO_MB} MB · MP4, MOV, M4V, WEBM, MKV up to {MAX_VIDEO_MB} MB</div>
       </div>
     </div>

@@ -10,6 +10,12 @@ import Editor from './screens/Editor.jsx'
 import Stems from './screens/Stems.jsx'
 import StartupScreen from './components/StartupScreen.jsx'
 import AboutDialog from './components/AboutDialog.jsx'
+import AudioSettings from './components/AudioSettings.jsx'
+import Shortcuts from './components/Shortcuts.jsx'
+import Tour from './components/Tour.jsx'
+import { sessionCache } from './lib/editorCache.js'
+import { addRecent, migrate } from './lib/session.js'
+import { initHistory } from './lib/history.js'
 
 export default function App() {
   const host = useMemo(() => getHost(), [])
@@ -24,6 +30,33 @@ export default function App() {
   const [dragOver, setDragOver] = useState(false)
   const [elevated, setElevated] = useState(false)
   const lastGen = useRef(0)
+  const sessionRef = useRef(null) // the open editor's {save, saveAs} (Editor registers it)
+  const [sessionUi, setSessionUi] = useState(null) // {title, path, dirty} for the header
+  const [recent, setRecent] = useState([])
+  const [audioOpen, setAudioOpen] = useState(false)
+  const [keysOpen, setKeysOpen] = useState(false)
+  const [tour, setTour] = useState(false)
+  // first run: the quick tour (skippable, once). Tests turn it off with RIPPER_SKIP_TOUR=1.
+  useEffect(() => {
+    let alive = true
+    Promise.all([host.getSetting('tourDone').catch(() => null), host.appInfo?.().catch(() => null)])
+      .then(([done, info]) => { if (alive && !done && !info?.skipTour) setTour(true) })
+    return () => { alive = false }
+  }, [host])
+  const endTour = useCallback(() => { setTour(false); host.setSetting('tourDone', true).catch(() => {}) }, [host])
+  // "?" anywhere (not while typing): the shortcut cheat sheet
+  useEffect(() => {
+    const k = (e) => {
+      const t = e.target
+      if (e.key !== '?' || (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || t.isContentEditable))) return
+      e.preventDefault()
+      setKeysOpen((o) => !o)
+    }
+    window.addEventListener('keydown', k)
+    return () => window.removeEventListener('keydown', k)
+  }, [])
+  // saved audio settings apply before anything plays
+  useEffect(() => { host.getSetting('audio').then((o) => o && host.audio.setOptions?.(o)).catch(() => {}) }, [host])
   const lastState = useRef(null)
 
   const notify = useCallback((text, kind = 'info', action = null) => {
@@ -159,9 +192,52 @@ export default function App() {
     }
   }, [ready, importFiles, notify])
 
+  // --- session files ------------------------------------------------------------------------
+  useEffect(() => { host.getSetting('recentSessions').then((r) => Array.isArray(r) && setRecent(r)).catch(() => {}) }, [host])
+  const rememberSession = useCallback((entry) => {
+    setRecent((r) => {
+      const next = addRecent(r, { ...entry, at: Date.now() })
+      host.setSetting('recentSessions', next).catch(() => {})
+      return next
+    })
+  }, [host])
+  const registerSession = useCallback((h) => { sessionRef.current = h; setSessionUi(h ? h.ui : null) }, [])
+  const openSession = useCallback(async (p) => {
+    const file = p || await host.openSessionDialog?.()
+    if (!file) return
+    try {
+      const res = await api.openSession(file)
+      const st = migrate(res.state)
+      const src = st.source || 'mix'
+      const e = st.editor || {}
+      sessionCache.set(`${res.track.id}:${src}`, {
+        hist: initHistory(st.program), bank: e.bank ?? 0, selection: e.selection ?? null, chop: e.chop || undefined,
+        trimOpts: e.trimOpts, sideTab: e.sideTab, seqOpts: e.seqOpts, beatOpts: e.beatOpts, exportOptions: st.export || undefined,
+        sessionPath: file,
+      })
+      rememberSession({ path: file, title: res.track.title })
+      setLibraryKick((k) => k + 1)
+      window.location.hash = `#/track/${res.track.id}${src !== 'mix' ? `?source=${encodeURIComponent(src)}` : ''}`
+      notify(`Opened ${file.split(/[\\/]/).pop()}`, 'success')
+    } catch (err) {
+      notify(`Could not open the session: ${err.message}`, 'error')
+    }
+  }, [host, notify, rememberSession])
+  useEffect(() => {
+    const onKey = (e) => {
+      if (!(e.ctrlKey || e.metaKey) || e.altKey) return
+      const k = e.key.toLowerCase()
+      if (k === 's') { e.preventDefault(); if (e.shiftKey) sessionRef.current?.saveAs(); else sessionRef.current?.save() }
+      else if (k === 'o') { e.preventDefault(); openSession() }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [openSession])
+
   const engineUp = boot ? boot.state === 'ready' : !!health && !engineError
-  const ctx = useMemo(() => ({ host, health, notify, engineUp, engineGen, importFiles, uploads, libraryKick, refreshHealth }),
-    [host, health, notify, engineUp, engineGen, importFiles, uploads, libraryKick, refreshHealth])
+  const ctx = useMemo(() => ({ host, health, notify, engineUp, engineGen, importFiles, uploads, libraryKick, refreshHealth,
+    registerSession, openSession, rememberSession, recentSessions: recent }),
+  [host, health, notify, engineUp, engineGen, importFiles, uploads, libraryKick, refreshHealth, registerSession, openSession, rememberSession, recent])
 
   // Never a blank window: until the engine answers, show the start-up screen (or its error).
   const starting = !health && (boot ? true : !engineError)
@@ -180,11 +256,18 @@ export default function App() {
               <span className="brand-mark">◢◤</span> THE RIPPER
             </Link>
             <div className="topbar-right">
+              <button className="btn btn-small btn-ghost" onClick={() => openSession()} title="Open a session (.ripper) — Ctrl+O" data-testid="session-open">Open…</button>
+              <button className="btn btn-small btn-ghost" onClick={() => sessionRef.current?.save()} disabled={!sessionUi} data-testid="session-save"
+                title={sessionUi ? `Save the session${sessionUi.path ? ` to ${sessionUi.path.split(/[\\/]/).pop()}` : ''} — Ctrl+S` : 'Open a track to save a session'}>
+                Save{sessionUi?.dirty ? ' •' : ''}</button>
+              <button className="btn btn-small btn-ghost" onClick={() => sessionRef.current?.saveAs()} disabled={!sessionUi} data-testid="session-saveas" title="Save the session as a new file — Ctrl+Shift+S">Save as…</button>
               {health && (
                 <span className={`badge ${health.pro ? 'badge-pro' : ''}`} data-testid="plan-badge">
                   {health.pro ? 'PRO' : 'FREE'}
                 </span>
               )}
+              <button className="btn btn-small btn-ghost" onClick={() => setKeysOpen(true)} title="Keyboard shortcuts (?)" data-testid="shortcuts-open">?</button>
+              <button className="btn btn-small btn-ghost" onClick={() => setAudioOpen(true)} title="Audio output, buffer size and latency" data-testid="audio-open">Audio</button>
               <button className="btn btn-small btn-ghost" onClick={() => setAboutOpen(true)} title="About The Ripper" data-testid="about-open">About</button>
               <span className={`dot ${ok ? 'dot-ok' : 'dot-bad'}`} title={dotTitle} data-testid="engine-status" data-ok={ok ? 'true' : 'false'} data-state={boot?.state || (ok ? 'ready' : 'down')} />
             </div>
@@ -194,8 +277,8 @@ export default function App() {
           {boot?.state === 'failed' && (
             <div className="banner banner-error" data-testid="engine-failed">
               The audio engine stopped and could not be restarted{boot.error?.message ? ` (${boot.error.message})` : ''}.{' '}
-              <button className="btn btn-small" onClick={() => host.retryEngine?.()} data-testid="engine-retry">Restart engine</button>
-              {host.capabilities.diagnostics && <button className="btn btn-small btn-ghost" onClick={() => host.copyDiagnostics().then(() => notify('Diagnostics copied', 'success'))}>Copy diagnostics</button>}
+              <button className="btn btn-small" onClick={() => host.retryEngine?.()} data-testid="engine-retry" title="Start the audio engine again">Restart engine</button>
+              {host.capabilities.diagnostics && <button className="btn btn-small btn-ghost" title="Copy app + engine details for a support request" onClick={() => host.copyDiagnostics().then(() => notify('Diagnostics copied', 'success'))}>Copy diagnostics</button>}
             </div>
           )}
           {elevated && (
@@ -220,11 +303,14 @@ export default function App() {
             </div>
           )}
           {aboutOpen && <AboutDialog host={host} health={health} onClose={() => setAboutOpen(false)} />}
+          {audioOpen && <AudioSettings onClose={() => setAudioOpen(false)} />}
+          {keysOpen && <Shortcuts onClose={() => setKeysOpen(false)} />}
+          {tour && <Tour onDone={endTour} />}
           <div className="toasts" data-testid="toasts">
             {toasts.map((t) => (
               <div key={t.id} className={`toast toast-${t.kind}`} data-testid={`toast-${t.kind}`}>
                 <span>{t.text}</span>
-                {t.action && <button className="btn btn-small" onClick={t.action.run} data-testid="toast-action">{t.action.label}</button>}
+                {t.action && <button className="btn btn-small" onClick={t.action.run} data-testid="toast-action" title={t.action.label}>{t.action.label}</button>}
               </div>
             ))}
           </div>

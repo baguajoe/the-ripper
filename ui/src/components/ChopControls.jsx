@@ -18,7 +18,7 @@ export default function ChopControls({ chop, setChop, onChop, busy, targetLabel,
     <div className="chop-controls">
       <div className="seg" role="tablist">
         {CHOP_MODES.map((m) => (
-          <button key={m.id} className={`seg-btn ${chop.mode === m.id ? 'seg-on' : ''}`} onClick={() => setChop({ mode: m.id })} data-testid={`chop-mode-${m.id}`}>
+          <button key={m.id} className={`seg-btn ${chop.mode === m.id ? 'seg-on' : ''}`} onClick={() => setChop({ mode: m.id })} data-testid={`chop-mode-${m.id}`} title={`Chop mode: ${m.label ?? m.id}`}>
             {m.label}
           </button>
         ))}

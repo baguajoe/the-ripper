@@ -125,12 +125,67 @@ def _stem_names(track: dict, data: dict) -> tuple[list[str], bool]:
 DSP_STEMS = ("drums", "bass", "vocals", "other")
 
 
-def _gate(n_slices: int, n_stems: int, midi: bool) -> None:
+def _beat_parts(data: dict, duration: float) -> dict:
+    """v1.2 beat exports in an export body: items (rendered clips: the beat, pad stems), midi_items
+    (sequencer MIDI) and positioned (chops in original position). See docs/formats.md#beat-exports."""
+    import base64
+    import binascii
+
+    def text(v, what, n=80):
+        if not isinstance(v, str) or not v.strip() or len(v) > n:
+            raise ApiError(400, "invalid_items", f"{what} must be a short non-empty string")
+        return v
+    items = data.get("items") or []
+    midi = data.get("midi_items") or []
+    if not isinstance(items, list) or not isinstance(midi, list) or len(items) + len(midi) > 300:
+        raise ApiError(400, "invalid_items", "items / midi_items must be lists (max 300)")
+    out_items = []
+    for it in items:
+        if not isinstance(it, dict):
+            raise ApiError(400, "invalid_items", "each item must be an object")
+        cid = str(it.get("clip") or "")
+        if not clips.exists(state().library.root, cid):
+            raise ApiError(404, "clip_not_found", "rendered clip not found - try again")
+        out_items.append({"clip": cid, "prefix": text(it.get("prefix"), "prefix", 12), "name": text(it.get("name"), "name"),
+                          "folder": str(it.get("folder") or "")[:40], "loop": bool(it.get("loop", False))})
+    out_midi = []
+    for m in midi:
+        try:
+            raw = base64.b64decode(str(m.get("data_b64", "")), validate=True)
+        except (binascii.Error, ValueError, AttributeError):
+            raise ApiError(400, "invalid_items", "midi data must be base64")
+        if not raw.startswith(b"MThd") or len(raw) > 4 * 1024 * 1024:
+            raise ApiError(400, "invalid_items", "not a MIDI file")
+        out_midi.append({"data_b64": base64.b64encode(raw).decode(), "prefix": text(m.get("prefix"), "prefix", 12),
+                         "name": text(m.get("name"), "name"), "folder": str(m.get("folder") or "")[:40]})
+    pos = data.get("positioned")
+    out_pos = None
+    if pos:
+        if not isinstance(pos, dict):
+            raise ApiError(400, "invalid_positioned", "positioned must be an object")
+        try:
+            start, end = float(pos.get("start", 0)), float(pos.get("end", duration))
+        except (TypeError, ValueError):
+            raise ApiError(400, "invalid_positioned", "start / end must be numbers")
+        end = min(end, duration)
+        if not (0 <= start < end):
+            raise ApiError(400, "invalid_positioned", "start / end must be a range inside the track")
+        sl = _slices({"slices": pos.get("slices") or []}, duration)
+        if not sl:
+            raise ApiError(400, "invalid_positioned", "positioned needs at least one slice")
+        out_pos = {"start": start, "end": end, "folder": str(pos.get("folder") or "")[:40],
+                   "slices": [dataclasses.asdict(x) for x in sl]}
+    return {"items": out_items, "midi_items": out_midi, "positioned": out_pos}
+
+
+def _gate(n_slices: int, n_stems: int, midi: bool, n_beat: int = 0) -> None:
+    if n_beat > 1 or (n_beat and (n_slices or n_stems)):
+        require_feature("batch_export")
     if n_slices > 1:
         require_feature("batch_export")
     if midi or (n_stems and n_slices) or n_stems > 1:
         require_feature("export_kit")
-    if n_slices + n_stems == 1 and not midi:
+    if n_slices + n_stems + n_beat == 1 and not midi:
         require_feature("single_export")
 
 
@@ -140,11 +195,13 @@ def _spec(track: dict, data: dict, out: dict, kind: str | None = None, folders: 
     slices = _slices(data, track["duration"])
     midi = bool(data.get("include_midi", False)) or kind == "midi"
     stem_names, make_dsp = _stem_names(track, data)
+    beat = _beat_parts(data, track["duration"])
+    n_beat = len(beat["items"]) + len(beat["midi_items"]) + (len(beat["positioned"]["slices"]) if beat["positioned"] else 0)
     if kind == "midi":
         _gate(0, 0, True)
     else:
-        _gate(len(slices), len(stem_names), midi)
-    if not slices and not stem_names:
+        _gate(len(slices), len(stem_names), midi, n_beat)
+    if not slices and not stem_names and not n_beat:
         raise ApiError(400, "nothing_to_export", "Add at least one slice or stem")
     have = set((track.get("stems") or {}).get("names", []))
     for sl in slices:
@@ -154,7 +211,7 @@ def _spec(track: dict, data: dict, out: dict, kind: str | None = None, folders: 
     return {"title": track["title"], "bpm": a["bpm"], "key": a.get("key"),
             "downbeat": a.get("downbeat"), "options": dataclasses.asdict(opts),
             "slices": [dataclasses.asdict(s) for s in slices], "stems": stem_names,
-            "make_dsp_stems": make_dsp, "include_midi": midi, "midi_only": kind == "midi",
+            "make_dsp_stems": make_dsp, "include_midi": midi and bool(slices), "midi_only": kind == "midi", **beat,
             "folders": folders, "out": out}
 
 
@@ -219,8 +276,8 @@ def render(track_id: str):
     track = require_track(track_id, ready=True)
     data = body()
     kind = data.get("kind", "slices")
-    if kind not in ("slice", "slices", "stem", "kit", "midi"):
-        raise ApiError(400, "invalid_kind", "kind must be slice, slices, stem, kit or midi")
+    if kind not in ("slice", "slices", "stem", "kit", "midi", "beat"):
+        raise ApiError(400, "invalid_kind", "kind must be slice, slices, stem, kit, midi or beat")
     dest = data.get("dest_dir")
     if not isinstance(dest, str) or not os.path.isabs(dest) or not Path(dest).is_dir():
         raise ApiError(400, "invalid_dest", "dest_dir must be an existing absolute folder")
@@ -230,6 +287,8 @@ def render(track_id: str):
         if not isinstance(data.get("stems"), list) or len(data["stems"]) != 1:
             raise ApiError(400, "invalid_stems", "kind 'stem' needs exactly one stem name")
         data = {**data, "slices": []}
+    if kind == "beat":  # beat WAV / pattern MIDI / pad stems / chops in place only
+        data = {**data, "slices": [], "stems": None, "include_midi": False}
     if kind == "kit":
         data = {**data, "include_midi": data.get("include_midi", True),
                 "stems": data.get("stems", "all") if data.get("stems") is not None else "all"}
@@ -260,6 +319,7 @@ def upload_clip():
 def pitch(track_id: str):
     """A slice transposed by `semitones` with its length kept (keep-length pad tuning).
     body: {start, end, semitones, source='mix'} -> planar float32 bytes, same headers as /clips."""
+    require_feature("fit")  # keep-length tuning is time-stretching
     track = require_track(track_id, ready=True)
     data = body()
     try:

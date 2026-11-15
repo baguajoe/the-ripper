@@ -24,6 +24,8 @@ contextBridge.exposeInMainWorld('ripper', {
   prepareDrag: (spec) => ipcRenderer.invoke('drag:prepare', spec),
   startDrag: (spec) => ipcRenderer.send('drag:start', spec),
   pickFolder: () => ipcRenderer.invoke('dialog:pickFolder'),
+  saveSessionDialog: (name) => ipcRenderer.invoke('dialog:saveSession', name),
+  openSessionDialog: () => ipcRenderer.invoke('dialog:openSession'),
   exportToFolder: (spec) => ipcRenderer.invoke('export:toFolder', spec),
   download: (req) => ipcRenderer.invoke('export:download', req),
   showItemInFolder: (p) => ipcRenderer.invoke('shell:showItem', p),

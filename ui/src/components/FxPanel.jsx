@@ -20,7 +20,7 @@ function Effect({ name, label, fx, defaults, onChange, prefix, children }) {
   return (
     <fieldset className={`shape-group ${f.on ? '' : 'fx-off'}`}>
       <legend>
-        <label className="chk"><input type="checkbox" checked={!!f.on} onChange={(e) => set({ on: e.target.checked })} data-testid={`${prefix}-${name}-on`} />{label}</label>
+        <label className="chk"><input type="checkbox" checked={!!f.on} onChange={(e) => set({ on: e.target.checked })} data-testid={`${prefix}-${name}-on`} title={`${label} on / off`} />{label}</label>
       </legend>
       {children(f, set)}
       <Knob label="Mix" value={f.mix} onChange={(v) => set({ mix: v })} testid={`${prefix}-${name}-mix`} title="Wet / dry" />

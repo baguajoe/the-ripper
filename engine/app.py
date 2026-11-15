@@ -111,12 +111,14 @@ def create_app(storage_dir: str | Path | None = None, *, pro_enabled: bool | Non
     from .routes import export as export_routes
     from .routes import jobs as job_routes
     from .routes import addons as addon_routes
+    from .routes import sessions as session_routes
     from .routes import tracks as track_routes
 
     app.register_blueprint(track_routes.bp, url_prefix=config.API_PREFIX)
     app.register_blueprint(job_routes.bp, url_prefix=config.API_PREFIX)
     app.register_blueprint(export_routes.bp, url_prefix=config.API_PREFIX)
     app.register_blueprint(addon_routes.bp, url_prefix=config.API_PREFIX)
+    app.register_blueprint(session_routes.bp, url_prefix=config.API_PREFIX)
 
     if purge:
         from .services import clips

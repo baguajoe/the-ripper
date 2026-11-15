@@ -105,6 +105,18 @@ app; the only condition is shipping the notices, which the installers do in
 it can't go into a closed-source app for free. SoundTouch (LGPL-2.1, would have needed dynamic
 linking) was the fallback and wasn't needed.
 
+## Audio output: Web Audio, no ASIO (v1.2)
+
+The app plays through Chromium's Web Audio (WASAPI shared mode on Windows, CoreAudio on macOS)
+with the pad engine in an AudioWorklet. **ASIO is not included.** Since October 2025 Steinberg
+offers the ASIO SDK under GPLv3 *or* its proprietary licence agreement; GPLv3 can't be used in a
+closed-source app, and the proprietary agreement must be signed by the publisher and
+countersigned by Steinberg before a proprietary app ships with ASIO. That is a business
+decision for the publisher, so no ASIO code is in the app. If the agreement is signed, a native
+output (e.g. PortAudio with its ASIO host API, which is MIT-licensed itself) can be added.
+A native WASAPI-exclusive / CoreAudio output path was **not** added in 1.2: see the 1.2 release
+notes (it needs latency measured on real Windows hardware first; the app now measures it).
+
 ## Other components
 
 The engine bundles Python packages (Flask, librosa, NumPy, SciPy, yt-dlp, …) under their

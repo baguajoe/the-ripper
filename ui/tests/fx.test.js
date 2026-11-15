@@ -93,3 +93,22 @@ describe('effects', () => {
     for (let i = 0; i < a.length; i++) if (a[i] !== c[i]) throw new Error(`renderBeat differs at ${i}`)
   })
 })
+
+describe('per-pad stems', () => {
+  it('sum exactly to the beat, mono cuts and pad effects included', () => {
+    let seq = emptySeq()
+    let p = seq.patterns.A
+    for (const [pad, st] of [[0, 0], [1, 2], [0, 5], [2, 8], [1, 9]]) p = toggleStep(p, 0, pad, st)
+    seq = { ...seq, patterns: { ...seq.patterns, A: p } }
+    const prog = { bpm: 120, master: null, banks: [{ mono: true, pads: [
+      { start: 0, end: 0.6 }, { start: 0.6, end: 1.2, fx: { delay: { on: true, time: '1/16', feedback: 0.4, mix: 0.5 } } }, { start: 1.2, end: 1.5, tune: 3 },
+    ] }] }
+    const pass = { ...passEvents(seq), bpm: 120, swing: 50 }
+    const src = { main: noiseSrc() }
+    const beat = renderBeat(src, prog, pass, { tail: 1 })
+    const stems = ['0:0', '0:1', '0:2'].map((k) => renderBeat(src, prog, pass, { tail: 1, solo: [k] }))
+    let err = 0
+    for (let c = 0; c < 2; c++) for (let i = 0; i < beat[0].length; i++) err = Math.max(err, Math.abs(stems[0][c][i] + stems[1][c][i] + stems[2][c][i] - beat[c][i]))
+    expect(err).toBeLessThan(1e-6)
+  })
+})

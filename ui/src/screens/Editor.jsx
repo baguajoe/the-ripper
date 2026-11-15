@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { sessionCache } from '../lib/editorCache.js'
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { api } from '../api.js'
 import { useApp } from '../context.js'
@@ -28,6 +29,9 @@ import TrimEditor from '../components/TrimEditor.jsx'
 import { PadMenu } from '../components/PadGrid.jsx'
 import SeqPanel from '../components/SeqPanel.jsx'
 import FxPanel from '../components/FxPanel.jsx'
+import BeatExport from '../components/BeatExport.jsx'
+import { beatParts } from '../lib/beatExport.js'
+import { sessionState } from '../lib/session.js'
 import { FREE_PATTERNS, PATTERN_IDS, REPEAT_RATES, addHit, clearPattern, emptySeq, passEvents, unswingTick } from '../lib/sequence.js'
 import { emptyMap, learn as midiLearn, midiInput, resolve as midiResolve } from '../lib/midi.js'
 import { buildFilename } from '../lib/filenames.js'
@@ -43,11 +47,11 @@ function Playhead({ subscribe, duration }) {
 
 // The pad program (with its undo history), current bank, selection and chop settings survive
 // navigation (Editor <-> Stems) for the session.
-const sessionCache = new Map()
 let padClipboard = null // {key: editor cacheKey, slice} — copy / paste pads within one track + source
 const DEFAULT_CHOP = { mode: 'even', count: 16, division: '1', sensitivity: 0.5, cap: 16, snap: true, snapDivision: '1', replace: false }
 const RECHOP_KEYS = ['mode', 'count', 'division', 'sensitivity', 'cap']
 const DEFAULT_BARS = 4
+const DEFAULT_BEAT_OPTS = { fx: true, master: true, range: 'selection', scope: 'bank' }
 const DEFAULT_SEQ_OPTS = { loop: true, overdub: true, countIn: false, metronome: false, quantize: '1/16', repeat: 'off' }
 let chopSeq = 1
 
@@ -62,7 +66,7 @@ export default function EditorRoute() {
 }
 
 function Editor({ id, source }) {
-  const { host, health, notify } = useApp()
+  const { host, health, notify, registerSession, rememberSession } = useApp()
   const cacheKey = `${id}:${source}`
   const cached = sessionCache.get(cacheKey)
 
@@ -89,6 +93,8 @@ function Editor({ id, source }) {
   const [pitchedVer, setPitchedVer] = useState(0)
   const [resampling, setResampling] = useState(null) // 'pass' | 'live' | null
   const [match, setMatch] = useState({ bpm: '', key: '' })
+  const [beatOpts, setBeatOptsState] = useState(cached?.beatOpts ?? DEFAULT_BEAT_OPTS)
+  const setBeatOpts = useCallback((patch) => setBeatOptsState((o) => ({ ...o, ...patch })), [])
   const [fitting, setFitting] = useState(false)
   const navigate = useNavigate()
   const [livePlayer, setLivePlayer] = useState(null) // the player, as state for components that subscribe to it
@@ -108,7 +114,10 @@ function Editor({ id, source }) {
   const onTime = useCallback((t) => { for (const fn of timeListeners.current) fn(t) }, [])
   const [zoom, setZoom] = useState(0) // 0 = whole track fits the width
   const [follow, setFollow] = useState(false) // scroll the zoomed waveform with the playhead
-  const [options, setOptionsState] = useState(DEFAULT_EXPORT)
+  const [options, setOptionsState] = useState(cached?.exportOptions ?? DEFAULT_EXPORT)
+  const [sessionPath, setSessionPath] = useState(cached?.sessionPath ?? null)
+  // the program as last saved (or as opened): anything else is unsaved work
+  const savedProgram = useRef(cached?.savedProgram ?? (cached?.sessionPath ? cached?.hist?.present : null) ?? null)
   const wave = useRef(null)
   const player = useRef(null)
   const onsetCache = useRef(new Map())
@@ -116,7 +125,9 @@ function Editor({ id, source }) {
   const anchorBar = useRef(null)
   const sensTimer = useRef(null)
 
-  useEffect(() => { sessionCache.set(cacheKey, { hist, bank, selection, chop, trimOpts, sideTab, seqOpts }) }, [cacheKey, hist, bank, selection, chop, trimOpts, sideTab, seqOpts])
+  useEffect(() => {
+    sessionCache.set(cacheKey, { hist, bank, selection, chop, trimOpts, sideTab, seqOpts, beatOpts, sessionPath, exportOptions: options, savedProgram: savedProgram.current })
+  }, [cacheKey, hist, bank, selection, chop, trimOpts, sideTab, seqOpts, beatOpts, sessionPath, options])
 
   const program = hist.present
   const cur = program.banks[bank]
@@ -134,7 +145,10 @@ function Editor({ id, source }) {
   const doRedo = useCallback(() => setHistory(redo(histRef.current)), [setHistory])
 
   // remembered export options
-  useEffect(() => { host.getSetting('exportOptions').then((o) => o && setOptionsState({ ...DEFAULT_EXPORT, ...o })).catch(() => {}) }, [host])
+  useEffect(() => {
+    if (cached?.exportOptions) return // opened from a session: its export options win
+    host.getSetting('exportOptions').then((o) => o && setOptionsState({ ...DEFAULT_EXPORT, ...o })).catch(() => {})
+  }, [host]) // eslint-disable-line react-hooks/exhaustive-deps
   const setOptions = useCallback((o) => { setOptionsState(o); host.setSetting('exportOptions', o).catch(() => {}) }, [host])
 
   // load track + audio
@@ -262,7 +276,7 @@ function Editor({ id, source }) {
       }
     }
     const r = placeChop(prog, sl, { target, limit: allowedBanks, source, chop: { id: `c${chopSeq++}`, region, settings: { ...settings } } })
-    if (into === 'base') setHistory(initHistory(r.program))
+    if (into === 'base') { setHistory(initHistory(r.program)); savedProgram.current = r.program } // the automatic first chop isn't unsaved work
     else commit(r.program, coalesce)
     setBankState(r.bank)
     setSelectedIdState(null)
@@ -359,6 +373,19 @@ function Editor({ id, source }) {
     setSelectedIdState(s.id)
   }, [cur, playSlice, flashPad, midiLearning, seqOpts.repeat, bank])
 
+  // audio settings: a new buffer size = a new AudioContext; move the pad engine over (no restart)
+  useEffect(() => host.audio.onChange?.(async (newCtx) => {
+    const old = player.current
+    if (!old) return
+    const pl = await LivePlayer.create(newCtx)
+    const main = old.mainSrc // before dispose() lets go of it
+    old.transportStop()
+    old.dispose()
+    player.current = pl
+    if (main) pl.setSource(main)
+    setLivePlayer(pl)
+  }), [host])
+
   // keep-length pads: fetch their pitch-shifted copies into the engine
   useEffect(() => {
     if (!player.current) return
@@ -373,7 +400,7 @@ function Editor({ id, source }) {
         }
       }
     }
-  }, [program, id, notify, src])
+  }, [program, id, notify, src, livePlayer])
 
   const releasePad = useCallback((pad) => {
     if (repeating.current === pad) { repeating.current = -1; player.current?.setRepeat(null) }
@@ -447,6 +474,30 @@ function Editor({ id, source }) {
   const clearOnePad = useCallback((pad) => commit((p) => clearPad(p, bank, pad)), [commit, bank])
   const padInfo = useMemo(() => (cur.vintage && cur.vintage !== 'off' ? { vintage: cur.vintage } : {}), [cur.vintage])
   const exportSlices = useMemo(() => slices.map((x) => ({ ...x, ...padInfo })), [slices, padInfo])
+  /** Render context for beat exports (lib/beatExport.js). `key` changes whenever the result would. */
+  const beatCtx = useCallback(() => {
+    const pl = player.current
+    const p = histRef.current.present
+    const sel = beatOpts.scope === 'selected' ? slices.filter((x) => x.id === selectedId)
+      : beatOpts.scope === 'all' ? p.banks.flatMap((b) => b.slices) : slices
+    const region = beatOpts.range === 'selection' ? (selection ?? cur.chop?.region ?? null) : null
+    const range = region ? { start: region.start, end: region.end } : { start: 0, end: duration }
+    return {
+      program: p, engineProgram: pl.lastProgram, sources: { main: pl.mainSrc, ...(pl.pitchedSrc || {}) },
+      seq: p.seq ?? emptySeq(), bpm, duration, fx: beatOpts.fx, master: beatOpts.master, range, chopSlices: sel, title: track?.title,
+      key: JSON.stringify([p, bpm, beatOpts, range, sel.map((x) => x.id), pitchedVer]),
+    }
+  }, [beatOpts, slices, selectedId, selection, cur.chop, duration, bpm, track, pitchedVer])
+  // the kit zip also gets the patterns as MIDI, the beat + pad stems, and the bank's chops in place
+  const kitExtras = useCallback(async () => {
+    const c = beatCtx()
+    const has = (c.seq ? Object.values(c.seq.patterns).some((x) => x.notes.length) : false)
+    const cur0 = c.seq.patterns[c.seq.current]?.notes.length > 0
+    // chops in place: every file is the whole range long, so a kit only takes them up to ~10 min of
+    // audio in total (Export the beat -> Chops in place has no limit)
+    const chops = slices.length > 0 && slices.length * (c.range.end - c.range.start) <= 600
+    return beatParts({ allPatterns: has, beat: cur0, stems: cur0, chops }, { ...c, chopSlices: slices })
+  }, [beatCtx, slices])
   const setVintage = useCallback((vintage) => commit((p) => updateBank(p, bank, { vintage })), [commit, bank])
 
   // --- sequencer -----------------------------------------------------------------------------
@@ -469,13 +520,13 @@ function Editor({ id, source }) {
         }),
       })),
     })
-  }, [program, src, pitchedVer, bpm])
+  }, [program, src, pitchedVer, bpm, livePlayer])
   useEffect(() => { if (bpm) setTrackBpm(id, bpm) }, [id, bpm])
   useEffect(() => {
     if (!player.current || !src || !bpm) return
     player.current.setPass({ ...passEvents(seq), bpm, swing: seq.swing }, seqOpts.loop)
-  }, [seq, bpm, seqOpts.loop, src])
-  useEffect(() => { player.current?.setMetronome(seqOpts.metronome) }, [seqOpts.metronome, src])
+  }, [seq, bpm, seqOpts.loop, src, livePlayer])
+  useEffect(() => { player.current?.setMetronome(seqOpts.metronome) }, [seqOpts.metronome, src, livePlayer])
 
   const take = useRef(0)
   const seqRefs = useRef({})
@@ -491,6 +542,59 @@ function Editor({ id, source }) {
     pl.transportPlay({ countIn: o.countIn, metronome: o.metronome, record })
   }, [editSeq])
   const seqStop = useCallback(() => player.current?.transportStop(), [])
+
+  // --- session files: save / save as / autosave every minute ---------------------------------
+  const stateNow = useCallback(() => sessionState({
+    program: histRef.current.present, source,
+    editor: { bank, selection, chop, trimOpts, sideTab, seqOpts, beatOpts },
+    exportOptions: options,
+  }), [source, bank, selection, chop, trimOpts, sideTab, seqOpts, beatOpts, options])
+  const dirty = hist.present !== savedProgram.current
+  const doSave = useCallback(async (path, { autosave = false } = {}) => {
+    const program = histRef.current.present
+    const res = await api.saveSession({ track_id: id, state: stateNow(), ...(path ? { path } : {}), ...(autosave ? { autosave: true } : {}) })
+    savedProgram.current = program
+    const cachedNow = sessionCache.get(cacheKey)
+    if (cachedNow) sessionCache.set(cacheKey, { ...cachedNow, savedProgram: program })
+    if (!autosave) {
+      setSessionPath(res.path)
+      rememberSession({ path: res.path, title: track?.title })
+      notify(`Saved ${res.path.split(/[\\/]/).pop()}`, 'success')
+    } else if (!path) {
+      rememberSession({ path: res.path, title: `${track?.title} (autosave)`, autosave: true })
+    }
+    setHist((h) => ({ ...h })) // refresh the dirty mark
+    return res
+  }, [id, stateNow, cacheKey, rememberSession, track, notify])
+  const saveAs = useCallback(async () => {
+    try {
+      const p = await host.saveSessionDialog?.(track?.title || 'Session')
+      if (p) await doSave(p)
+    } catch (e) { notify(`Save failed: ${e.message}`, 'error') }
+  }, [host, track, doSave, notify])
+  const save = useCallback(async () => {
+    if (!sessionPath) return saveAs()
+    try { await doSave(sessionPath) } catch (e) { notify(`Save failed: ${e.message}`, 'error') }
+  }, [sessionPath, saveAs, doSave, notify])
+  const sessionFns = useRef({})
+  useEffect(() => { sessionFns.current = { save, saveAs, doSave, dirty, sessionPath } })
+  useEffect(() => {
+    if (!track) return undefined
+    registerSession({ save: () => sessionFns.current.save(), saveAs: () => sessionFns.current.saveAs(), ui: { title: track.title, path: sessionPath, dirty } })
+    return () => registerSession(null)
+  }, [registerSession, track, sessionPath, dirty])
+  useEffect(() => {
+    const autosave = () => {
+      const f = sessionFns.current
+      if (!f.dirty) return Promise.resolve(null)
+      return f.doSave(f.sessionPath, { autosave: true }).catch(() => null)
+    }
+    window.__ripperTest = { ...(window.__ripperTest || {}), autosaveNow: autosave, sessionState: () => stateNowRef.current() }
+    const t = setInterval(autosave, 60_000)
+    return () => clearInterval(t)
+  }, [])
+  const stateNowRef = useRef(stateNow)
+  useEffect(() => { stateNowRef.current = stateNow })
 
   // --- fit the sample to the project tempo / key -> a new track, chops carried over ----------
   const fitToProject = useCallback(async () => {
@@ -562,7 +666,7 @@ function Editor({ id, source }) {
   }, [seqPlay])
   // recorded hits (live pads, MIDI, note repeat) land in the current pattern, quantized; one take = one undo step
   useEffect(() => {
-    const pl = player.current
+    const pl = livePlayer
     if (!pl || !src) return undefined
     return pl.on((m) => {
       if (m.type !== 'hit') return
@@ -573,7 +677,7 @@ function Editor({ id, source }) {
         patterns: { ...s0.patterns, [s0.current]: addHit(s0.patterns[s0.current], { bank: m.bank, pad: m.pad, vel: m.vel, tick: unswingTick(m.tick, s0.swing) }, o.quantize) },
       }), `take-${take.current}`)
     })
-  }, [src, editSeq])
+  }, [src, editSeq, livePlayer])
 
   const onRegionCreate = useCallback(({ start, end }) => {
     if (slices.length >= PADS_PER_BANK) return notify(`Bank ${BANKS[bank]} is full (16 pads) — pick an empty bank first.`, 'info')
@@ -736,19 +840,19 @@ function Editor({ id, source }) {
         <BpmControls analysis={analysis} onApply={regrid} busy={busy} />
         <span className="key-display" data-testid="editor-key" title={`Camelot ${analysis.camelot ?? ''}`}>{analysis.key ?? '—'}</span>
         <div className="downbeat-ctl" title="Shift the downbeat (bar 1)">
-          <button className="btn btn-small" onClick={() => regrid({ downbeat: shiftDownbeat(analysis.downbeat, analysis.bpm, -1) })} disabled={busy} data-testid="downbeat-left">◀</button>
+          <button className="btn btn-small" onClick={() => regrid({ downbeat: shiftDownbeat(analysis.downbeat, analysis.bpm, -1) })} disabled={busy} data-testid="downbeat-left" title="Move bar 1 one beat earlier">◀</button>
           <span className="muted small">Downbeat</span>
-          <button className="btn btn-small" onClick={() => regrid({ downbeat: shiftDownbeat(analysis.downbeat, analysis.bpm, 1) })} disabled={busy} data-testid="downbeat-right">▶</button>
+          <button className="btn btn-small" onClick={() => regrid({ downbeat: shiftDownbeat(analysis.downbeat, analysis.bpm, 1) })} disabled={busy} data-testid="downbeat-right" title="Move bar 1 one beat later">▶</button>
         </div>
         <div className="match-ctl" title={health?.features?.fit === false ? 'Fit to tempo / key is a Pro feature' : 'Match to: time-stretch to a project tempo and/or shift to a project key (new track, chops carried over)'}>
           <span className="muted small">Match</span>
           <input className="input input-num" type="number" min="40" max="300" step="0.1" placeholder={String(bpm)} value={match.bpm}
-            onChange={(e) => setMatch((m) => ({ ...m, bpm: e.target.value }))} data-testid="match-bpm" aria-label="Project BPM" />
-          <select className="input input-small" value={match.key} onChange={(e) => setMatch((m) => ({ ...m, key: e.target.value }))} data-testid="match-key" aria-label="Project key">
+            onChange={(e) => setMatch((m) => ({ ...m, bpm: e.target.value }))} data-testid="match-bpm" title="Project tempo to fit the sample to" aria-label="Project BPM" />
+          <select className="input input-small" value={match.key} onChange={(e) => setMatch((m) => ({ ...m, key: e.target.value }))} data-testid="match-key" title="Project key to shift the sample to" aria-label="Project key">
             <option value="">key</option>
             {['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'].flatMap((n) => [n, `${n}m`]).map((k) => <option key={k} value={k}>{k}</option>)}
           </select>
-          <button className="btn btn-small" onClick={fitToProject} disabled={fitting || health?.features?.fit === false || (!match.bpm && !match.key)} data-testid="match-fit">
+          <button className="btn btn-small" onClick={fitToProject} disabled={fitting || health?.features?.fit === false || (!match.bpm && !match.key)} data-testid="match-fit" title="Fit: make a time-stretched / key-shifted copy of this track">
             {fitting ? 'Fitting…' : 'Fit'}</button>
         </div>
         <Link to={`/track/${id}/stems`} className="btn" data-testid="open-stems">Stems ›</Link>
@@ -766,13 +870,13 @@ function Editor({ id, source }) {
       )}
 
       <div className="transport">
-        <button className="btn btn-play" onClick={() => wave.current?.playPause()} data-testid="play-toggle">
+        <button className="btn btn-play" onClick={() => wave.current?.playPause()} data-testid="play-toggle" title="Play / pause the track (Space)">
           {playing ? '❚❚ Pause' : '▶ Play'} <kbd>Space</kbd>
         </button>
-        <button className={`btn ${loop.active ? 'btn-on' : ''}`} onClick={toggleLoop} data-testid="loop-toggle">⟳ Loop <kbd>L</kbd></button>
+        <button className={`btn ${loop.active ? 'btn-on' : ''}`} onClick={toggleLoop} data-testid="loop-toggle" title="Loop the selected slice or the selection (L)">⟳ Loop <kbd>L</kbd></button>
         <Playhead subscribe={subscribeTime} duration={duration} />
         <label className="slider-label">Zoom
-          <input type="range" min="0" max="800" step="10" value={zoom} onChange={(e) => setZoom(Number(e.target.value))} data-testid="zoom" />
+          <input type="range" min="0" max="800" step="10" value={zoom} onChange={(e) => setZoom(Number(e.target.value))} data-testid="zoom" title="Zoom the waveform" />
           <span className="zoom-value">{zoom === 0 ? 'Fit' : `${zoom} px/s`}</span>
         </label>
         <label className="chk" title="When zoomed in, keep the playhead in view by scrolling the waveform">
@@ -820,7 +924,7 @@ function Editor({ id, source }) {
           </select>
         </PadGrid>
         <div className="editor-side">
-          {sideTab === 'slices' && <ExportPanel track={track} slices={exportSlices} bank={bank} options={options} setOptions={setOptions} />}
+          {sideTab === 'slices' && <ExportPanel track={track} slices={exportSlices} bank={bank} options={options} setOptions={setOptions} kitExtras={kitExtras} />}
           <div className="panel slices-panel">
             <div className="panel-title side-tabs">
               {[['slices', `Slices · Bank ${BANKS[bank]}`], ['pad', 'Pad'], ['fx', 'Effects'], ['seq', 'Sequencer']].map(([k, l]) => (
@@ -845,6 +949,7 @@ function Editor({ id, source }) {
                   onPlay={() => seqPlay()} onStop={seqStop} onRecord={seqRecord} onPreview={(pad) => { const x = padSlice(cur, pad); if (x) playSlice(x, pad) }}
                   allowedPatterns={allowedPatterns} bpm={bpm} resampling={resampling} onResample={resample} canResample={health?.features?.resample !== false}
                   midi={{ learning: midiLearning, setLearning: (on) => { setMidiLearning(on); setMidiTarget(null) }, target: midiTarget, setTarget: setMidiTarget, devices: midiDevices }} />
+                <BeatExport track={track} options={options} seq={seq} opts={beatOpts} setOpts={setBeatOpts} ctx={beatCtx} hasSelection={!!(selection || cur.chop?.region)} />
               </div>
             )}
             {sideTab === 'fx' && (

@@ -162,7 +162,7 @@ function specKey(spec) {
 
 function validSpec(spec) {
   return spec && typeof spec === 'object' && typeof spec.trackId === 'string' && /^[a-f0-9]{32}$/.test(spec.trackId)
-    && ['slice', 'slices', 'stem', 'kit', 'midi'].includes(spec.kind)
+    && ['slice', 'slices', 'stem', 'kit', 'midi', 'beat'].includes(spec.kind)
 }
 
 /** Ask the engine to render a DragSpec into dir. Returns absolute file paths. */
@@ -174,6 +174,10 @@ async function renderSpec(spec, dir, extra = {}) {
     slices: spec.slices || [],
     stems: spec.kind === 'stem' ? spec.stems : spec.kind === 'kit' ? 'all' : undefined,
     include_midi: spec.kind === 'kit',
+    // v1.2 beat exports: rendered items, MIDI, chops in original position
+    ...(spec.items ? { items: spec.items } : {}),
+    ...(spec.midi_items ? { midi_items: spec.midi_items } : {}),
+    ...(spec.positioned ? { positioned: spec.positioned } : {}),
     ...(spec.options || {}),
     dest_dir: dir,
     ...extra,
@@ -238,7 +242,7 @@ function registerIpc() {
   })
   handle('engine:status', () => ({ ...status }))
   handle('engine:retry', () => { if (status.state === 'failed') { restartPolicy.reset(); startEngine() } })
-  handle('app:info', () => ({ version: app.getVersion(), platform: process.platform, arch: process.arch, logDir: logs.dir, elevated: elevation === 'elevated' }))
+  handle('app:info', () => ({ version: app.getVersion(), platform: process.platform, arch: process.arch, logDir: logs.dir, elevated: elevation === 'elevated', skipTour: process.env.RIPPER_SKIP_TOUR === '1' }))
   handle('diag:copy', () => copyDiagnostics())
   handle('diag:openLogs', async () => { await openLogFolder() })
 
@@ -277,6 +281,23 @@ function registerIpc() {
     if (r.canceled || !r.filePaths[0]) return null
     saveSetting('exportFolder', r.filePaths[0])
     return r.filePaths[0]
+  })
+
+  // --- session files (.ripper) -------------------------------------------------------------------
+  handle('dialog:saveSession', async (_e, name) => {
+    const dir = loadSettings().sessionFolder || app.getPath('documents')
+    const safe = String(name || 'Session').replace(/[\\/:*?"<>|]+/g, '-').slice(0, 80) || 'Session'
+    const r = await dialog.showSaveDialog(win, { title: 'Save session', defaultPath: path.join(dir, `${safe}.ripper`),
+      filters: [{ name: 'The Ripper session', extensions: ['ripper'] }] })
+    if (r.canceled || !r.filePath) return null
+    const p = r.filePath.toLowerCase().endsWith('.ripper') ? r.filePath : `${r.filePath}.ripper`
+    saveSetting('sessionFolder', path.dirname(p))
+    return p
+  })
+  handle('dialog:openSession', async () => {
+    const r = await dialog.showOpenDialog(win, { title: 'Open session', properties: ['openFile'],
+      defaultPath: loadSettings().sessionFolder || app.getPath('documents'), filters: [{ name: 'The Ripper session', extensions: ['ripper'] }] })
+    return r.canceled || !r.filePaths[0] ? null : r.filePaths[0]
   })
 
   handle('export:toFolder', async (_e, spec) => {

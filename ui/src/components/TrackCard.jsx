@@ -46,7 +46,7 @@ export default function TrackCard({ track, onDelete, onRetry }) {
         <div className="card-sub error-text" data-testid="track-error">
           <span>{track.error}</span>
           {onRetry && (
-            <button className="btn btn-small" data-testid="track-retry" onClick={(e) => { e.stopPropagation(); onRetry(track) }}>Retry</button>
+            <button className="btn btn-small" data-testid="track-retry" title="Import this track again" onClick={(e) => { e.stopPropagation(); onRetry(track) }}>Retry</button>
           )}
         </div>
       )}

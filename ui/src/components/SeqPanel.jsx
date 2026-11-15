@@ -31,7 +31,7 @@ function Step({ on, vel, accent, beat, playhead, onToggle, onVelocity, testid, t
         e.preventDefault()
         if (!on) { onToggle(); return }
         drag.current = { y: e.clientY, vel, moved: false }
-        e.currentTarget.setPointerCapture?.(e.pointerId)
+        try { e.currentTarget.setPointerCapture(e.pointerId) } catch { /* not a live pointer */ }
       }}
       onPointerMove={(e) => {
         const d = drag.current
@@ -123,7 +123,7 @@ export default function SeqPanel({ seq, onSeq, bank, banks, player, opts, setOpt
       <div className="seq-row">
         <div className="seg seg-small" title="Play the current pattern, or the song (patterns chained in order)">
           {['pattern', 'song'].map((m) => (
-            <button key={m} className={`seg-btn ${seq.mode === m ? 'seg-on' : ''}`} onClick={() => onSeq((s) => ({ ...s, mode: m }))} data-testid={`seq-mode-${m}`}>{m === 'pattern' ? 'Pattern' : 'Song'}</button>
+            <button key={m} className={`seg-btn ${seq.mode === m ? 'seg-on' : ''}`} onClick={() => onSeq((s) => ({ ...s, mode: m }))} data-testid={`seq-mode-${m}`} title={m === 'pattern' ? 'Play the current pattern' : 'Play the song (the chain of patterns)'}>{m === 'pattern' ? 'Pattern' : 'Song'}</button>
           ))}
         </div>
         <span className="song-chain" data-testid="song-chain">

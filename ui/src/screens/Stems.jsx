@@ -19,12 +19,12 @@ function StemStrip({ name, state, setState, anySolo, trackId, onDownload, onSend
       <span className="drag-handle" title="Drag this stem into your DAW" data-testid={`stem-drag-${name}`} {...drag}>⠿</span>
       <button className={`stem-name ${state.solo && anySolo ? 'stem-name-solo' : ''}`} onClick={() => onAudition(name)}
         title="Click to hear this stem on its own (click again for all)" data-testid={`stem-name-${name}`}>{name}</button>
-      <button className={`btn btn-small ${state.solo ? 'btn-on' : ''}`} onClick={() => setState({ solo: !state.solo })} data-testid={`stem-solo-${name}`}>S</button>
-      <button className={`btn btn-small ${state.mute ? 'btn-warn' : ''}`} onClick={() => setState({ mute: !state.mute })} data-testid={`stem-mute-${name}`}>M</button>
+      <button className={`btn btn-small ${state.solo ? 'btn-on' : ''}`} onClick={() => setState({ solo: !state.solo })} data-testid={`stem-solo-${name}`} title={`Solo ${name}`}>S</button>
+      <button className={`btn btn-small ${state.mute ? 'btn-warn' : ''}`} onClick={() => setState({ mute: !state.mute })} data-testid={`stem-mute-${name}`} title={`Mute ${name}`}>M</button>
       <input type="range" min="0" max="1.5" step="0.01" value={state.volume} onChange={(e) => setState({ volume: Number(e.target.value) })}
-        data-testid={`stem-volume-${name}`} aria-label={`${name} volume`} />
-      <button className="btn btn-small" onClick={() => onDownload(name)} data-testid={`stem-download-${name}`}>⤓ WAV</button>
-      <button className="btn btn-small" onClick={() => onSend(name)} data-testid={`stem-send-${name}`}>Send to Chop Editor</button>
+        data-testid={`stem-volume-${name}`} title={`${name} volume`} aria-label={`${name} volume`} />
+      <button className="btn btn-small" onClick={() => onDownload(name)} data-testid={`stem-download-${name}`} title={`Save the ${name} stem as a WAV`}>⤓ WAV</button>
+      <button className="btn btn-small" onClick={() => onSend(name)} data-testid={`stem-send-${name}`} title={`Open the ${name} stem in the editor to chop it`}>Send to Chop Editor</button>
     </div>
   )
 }
@@ -39,7 +39,7 @@ function AddonPanel({ addon, job, onInstall, onRemove, busy }) {
     return (
       <div className="addon-card addon-installed" data-testid="addon-card" data-state="installed">
         <span className="muted small">HQ (AI) add-on installed · {addon.variant_label} build{info.disk_bytes ? ` · ${formatBytes(info.disk_bytes)} on disk` : ''}</span>
-        <button className="btn btn-small btn-ghost" onClick={onRemove} disabled={busy} data-testid="addon-remove">Remove</button>
+        <button className="btn btn-small btn-ghost" onClick={onRemove} disabled={busy} data-testid="addon-remove" title="Remove the HQ (AI) add-on">Remove</button>
       </div>
     )
   }
@@ -64,7 +64,7 @@ function AddonPanel({ addon, job, onInstall, onRemove, busy }) {
         </div>
       ) : (
         <div className="row">
-          <button className="btn btn-primary" onClick={onInstall} disabled={busy || (!!addon.manifest_error && !addon.download_bytes)} data-testid="addon-get">
+          <button className="btn btn-primary" onClick={onInstall} disabled={busy || (!!addon.manifest_error && !addon.download_bytes)} data-testid="addon-get" title="Download and install the HQ (AI) add-on">
             {job?.status === 'error' ? 'Resume download' : 'Get HQ (AI) stems'}
           </button>
           {job?.status === 'error' && <span className="error-text small" data-testid="addon-error">{job.error}</span>}
@@ -302,13 +302,13 @@ export default function Stems() {
         <div className="panel-title">Separate</div>
         <div className="stem-engines">
           <label className={`engine-opt ${effectiveEngine === 'ai' ? 'engine-on' : ''} ${aiAvailable ? '' : 'engine-locked'}`}>
-            <input type="radio" name="engine" checked={effectiveEngine === 'ai'} onChange={() => setEngine('ai')} disabled={!aiAvailable} data-testid="engine-ai" />
+            <input type="radio" name="engine" checked={effectiveEngine === 'ai'} onChange={() => setEngine('ai')} disabled={!aiAvailable} data-testid="engine-ai" title="HQ (AI) stems: best quality, slower" />
             <div>
               <strong>HQ (AI)</strong> <span className="badge badge-free">FREE</span>
               {aiAvailable ? (
                 <>
                   <div className="muted small">Demucs 4.1 · runs on: <span data-testid="ai-device">{deviceText}</span></div>
-                  <select className="input" value={model} onChange={(e) => setModel(e.target.value)} disabled={effectiveEngine !== 'ai'} data-testid="ai-model">
+                  <select className="input" value={model} onChange={(e) => setModel(e.target.value)} disabled={effectiveEngine !== 'ai'} data-testid="ai-model" title="Which AI model / how many stems">
                     {Object.entries(health.models).map(([k, label]) => <option key={k} value={k}>{label}</option>)}
                   </select>
                 </>
@@ -318,11 +318,11 @@ export default function Stems() {
             </div>
           </label>
           <label className={`engine-opt ${effectiveEngine === 'dsp' ? 'engine-on' : ''}`}>
-            <input type="radio" name="engine" checked={effectiveEngine === 'dsp'} onChange={() => setEngine('dsp')} data-testid="engine-dsp" />
+            <input type="radio" name="engine" checked={effectiveEngine === 'dsp'} onChange={() => setEngine('dsp')} data-testid="engine-dsp" title="Fast stems: instant, no AI" />
             <div>
               <strong>Fast (no AI)</strong>
               <div className="muted small">Seconds. For vocals use HQ (AI).</div>
-              <select className="input" value={fastModel} onChange={(e) => setFastModel(e.target.value)} disabled={effectiveEngine !== 'dsp'} data-testid="fast-model">
+              <select className="input" value={fastModel} onChange={(e) => setFastModel(e.target.value)} disabled={effectiveEngine !== 'dsp'} data-testid="fast-model" title="Which fast split">
                 <option value="dsp">Drums / Bass / Music</option>
                 <option value="center_cancel">Instrumental (center cancel)</option>
               </select>
@@ -333,7 +333,7 @@ export default function Stems() {
           <AddonPanel addon={addon} job={shownJob} onInstall={installAddon} onRemove={removeAddon} busy={addonBusy || !!jobId} />
         )}
         <div className="row">
-          <button className="btn btn-primary" onClick={run} disabled={!!jobId} data-testid="stems-run">
+          <button className="btn btn-primary" onClick={run} disabled={!!jobId} data-testid="stems-run" title="Separate the stems">
             {jobId ? 'Separating…' : stems ? 'Re-run separation' : 'Separate stems'}
           </button>
           {!jobId && est && (
@@ -357,9 +357,9 @@ export default function Stems() {
             <span className="muted small"> · click a stem's name to hear it alone</span>
           </div>
           <div className="transport">
-            <button className="btn" onClick={playing ? stop : play} disabled={!ready} data-testid="stems-play">{playing ? '■ Stop' : '▶ Play'}</button>
+            <button className="btn" onClick={playing ? stop : play} disabled={!ready} data-testid="stems-play" title="Play / pause the stems">{playing ? '■ Stop' : '▶ Play'}</button>
             <span className="time">{formatTime(pos)} / {formatTime(track.duration)}</span>
-            <input type="range" min="0" max={track.duration} step="0.01" value={pos} onChange={(e) => { stop(); setPos(Number(e.target.value)) }} className="seek" aria-label="Position" data-testid="stems-seek" />
+            <input type="range" min="0" max={track.duration} step="0.01" value={pos} onChange={(e) => { stop(); setPos(Number(e.target.value)) }} className="seek" aria-label="Position" data-testid="stems-seek" title="Position in the track" />
           </div>
           {!ready && <div className="muted small">Loading stems…</div>}
           {stems.names.map((n) => (

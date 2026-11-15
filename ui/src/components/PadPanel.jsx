@@ -1,5 +1,6 @@
 import { DEFAULT_ENV, DEFAULT_FILTER, FILTER_MAX_HZ, FILTER_MIN_HZ, FINE_RANGE, TUNE_RANGE, shaping } from '../dsp/params.js'
 import { BANKS, padKeyLabel } from '../lib/pads.js'
+import { useApp } from '../context.js'
 
 // cutoff slider: 0..1000 on a log scale
 const toCut = (v) => Math.round(FILTER_MIN_HZ * Math.pow(FILTER_MAX_HZ / FILTER_MIN_HZ, v / 1000))
@@ -39,6 +40,8 @@ function Slider({ label, value, min, max, step = 1, onChange, display, testid, t
  * onChange(patch) merges into the slice (one undo step per burst of the same control).
  */
 export default function PadPanel({ slice, bank, onChange, onAudition }) {
+  const { health } = useApp()
+  const stretchLocked = health?.features?.fit === false
   if (!slice) return <div className="muted pad-12" data-testid="pad-panel-empty">Select a pad to shape its sound.</div>
   const sh = shaping(slice)
   const env = (patch) => onChange({ env: { ...DEFAULT_ENV, ...sh.env, ...patch } })
@@ -59,8 +62,8 @@ export default function PadPanel({ slice, bank, onChange, onAudition }) {
             display={`${sh.tune > 0 ? '+' : ''}${sh.tune} st`} testid="shape-tune" title="Tune in semitones (±24). Changes speed, like a classic sampler." />
           <Slider label="Fine" min={-FINE_RANGE} max={FINE_RANGE} value={sh.fine} onChange={(v) => onChange({ fine: v })}
             display={`${sh.fine > 0 ? '+' : ''}${sh.fine} ct`} testid="shape-fine" title="Fine tune in cents (±50)" />
-          <label className="chk" title="Keep length: change the pitch by time-stretching, so the pad keeps its length">
-            <input type="checkbox" checked={sh.keepLength} onChange={(e) => onChange({ keepLength: e.target.checked })} data-testid="shape-keeplength" />Keep length
+          <label className="chk" title={stretchLocked ? 'Keep length (time-stretch) is a Pro feature' : 'Keep length: change the pitch by time-stretching, so the pad keeps its length'}>
+            <input type="checkbox" checked={sh.keepLength} disabled={stretchLocked} onChange={(e) => onChange({ keepLength: e.target.checked })} data-testid="shape-keeplength" />Keep length
           </label>
         </fieldset>
         <fieldset className="shape-group">
