@@ -26,6 +26,9 @@ import { DEFAULT_TRIM, moveEdge, snapZero } from '../lib/trim.js'
 import PadPanel from '../components/PadPanel.jsx'
 import TrimEditor from '../components/TrimEditor.jsx'
 import { PadMenu } from '../components/PadGrid.jsx'
+import SeqPanel from '../components/SeqPanel.jsx'
+import { FREE_PATTERNS, PATTERN_IDS, REPEAT_RATES, addHit, clearPattern, emptySeq, passEvents, unswingTick } from '../lib/sequence.js'
+import { emptyMap, learn as midiLearn, midiInput, resolve as midiResolve } from '../lib/midi.js'
 import { buildFilename } from '../lib/filenames.js'
 import { formatTime } from '../lib/format.js'
 
@@ -44,6 +47,7 @@ let padClipboard = null // {key: editor cacheKey, slice} — copy / paste pads w
 const DEFAULT_CHOP = { mode: 'even', count: 16, division: '1', sensitivity: 0.5, cap: 16, snap: true, snapDivision: '1', replace: false }
 const RECHOP_KEYS = ['mode', 'count', 'division', 'sensitivity', 'cap']
 const DEFAULT_BARS = 4
+const DEFAULT_SEQ_OPTS = { loop: true, overdub: true, countIn: false, metronome: false, quantize: '1/16', repeat: 'off' }
 let chopSeq = 1
 
 const isTyping = (el) => el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.tagName === 'SELECT' || el.isContentEditable)
@@ -79,6 +83,14 @@ function Editor({ id, source }) {
   const [sideTab, setSideTab] = useState(cached?.sideTab ?? 'slices')
   const [menu, setMenu] = useState(null) // {pad, at}
   const [onsets, setOnsets] = useState(null)
+  const [seqOpts, setSeqOptsState] = useState(cached?.seqOpts ?? DEFAULT_SEQ_OPTS)
+  const setSeqOpts = useCallback((patch) => setSeqOptsState((o) => ({ ...o, ...patch })), [])
+  const [pitchedVer, setPitchedVer] = useState(0)
+  const [livePlayer, setLivePlayer] = useState(null) // the player, as state for components that subscribe to it
+  const [midiMap, setMidiMap] = useState(emptyMap())
+  const [midiLearning, setMidiLearning] = useState(false)
+  const [midiTarget, setMidiTarget] = useState(null)
+  const [midiDevices, setMidiDevices] = useState([])
   const [loop, setLoop] = useState({ active: false, start: 0, end: 0 })
   const [activePads, setActivePads] = useState(() => new Set())
   const [busy, setBusy] = useState(false)
@@ -99,7 +111,7 @@ function Editor({ id, source }) {
   const anchorBar = useRef(null)
   const sensTimer = useRef(null)
 
-  useEffect(() => { sessionCache.set(cacheKey, { hist, bank, selection, chop, trimOpts, sideTab }) }, [cacheKey, hist, bank, selection, chop, trimOpts, sideTab])
+  useEffect(() => { sessionCache.set(cacheKey, { hist, bank, selection, chop, trimOpts, sideTab, seqOpts }) }, [cacheKey, hist, bank, selection, chop, trimOpts, sideTab, seqOpts])
 
   const program = hist.present
   const cur = program.banks[bank]
@@ -139,8 +151,13 @@ function Editor({ id, source }) {
         let pcm
         try { pcm = decodeWav(bytes) } catch { pcm = fromAudioBuffer(buf) }
         registerSource(id, source, pcm)
-        if (!player.current) player.current = await LivePlayer.create(ctx)
+        if (!player.current) {
+          const pl = await LivePlayer.create(ctx)
+          if (!alive) { pl.dispose(); return }
+          player.current = pl
+        }
         if (!alive) return
+        setLivePlayer(player.current)
         player.current.setSource(pcm)
         setSrc(pcm)
         window.__ripperTest = { ...(window.__ripperTest || {}), editorSource: pcm } // e2e: the audio the pads play
@@ -152,7 +169,10 @@ function Editor({ id, source }) {
     })()
     return () => {
       alive = false
-      player.current?.stopAll()
+      // leaving the editor: free the pad engine (and its copy of the track) entirely
+      player.current?.transportStop()
+      player.current?.dispose()
+      player.current = null
       if (url) URL.revokeObjectURL(url)
     }
   }, [id, source, host])
@@ -316,14 +336,22 @@ function Editor({ id, source }) {
     if (s) player.current?.play(s, { bank, pad, vel, mono: histRef.current.present.banks[bank].mono, pitchedKey: pitchedKey(s) })
   }, [bank])
 
+  const repeating = useRef(-1)
   const triggerPad = useCallback((pad, vel = 127) => {
+    if (midiLearning) { setMidiTarget(`pad:${pad}`); return }
     const s = padSlice(cur, pad)
     setSelectedPad(pad)
     if (!s) return
-    playSlice(s, pad, typeof vel === 'number' ? vel : 127)
+    const v = typeof vel === 'number' ? vel : 127
+    if (seqOpts.repeat !== 'off' && REPEAT_RATES[seqOpts.repeat]) {
+      repeating.current = pad
+      player.current?.setRepeat({ bank, pad, vel: v, rate: REPEAT_RATES[seqOpts.repeat] })
+    } else {
+      playSlice(s, pad, v)
+    }
     flashPad(pad)
     setSelectedIdState(s.id)
-  }, [cur, playSlice, flashPad])
+  }, [cur, playSlice, flashPad, midiLearning, seqOpts.repeat, bank])
 
   // keep-length pads: fetch their pitch-shifted copies into the engine
   useEffect(() => {
@@ -332,14 +360,22 @@ function Editor({ id, source }) {
       for (const s of b.slices) {
         const key = pitchedKey(s)
         const p = key && getPitched(id, s)
-        if (p) p.then((pcm) => player.current?.setPitched(key, pcm)).catch((e) => notify(`Keep length: ${e.message}`, 'error'))
+        if (p) {
+          p.then((pcm) => {
+            if (player.current && !player.current.pitched.has(key)) { player.current.setPitched(key, pcm); setPitchedVer((v) => v + 1) }
+          }).catch((e) => notify(`Keep length: ${e.message}`, 'error'))
+        }
       }
     }
   }, [program, id, notify, src])
 
-  const releasePad = useCallback((pad) => player.current?.release(bank, pad), [bank])
+  const releasePad = useCallback((pad) => {
+    if (repeating.current === pad) { repeating.current = -1; player.current?.setRepeat(null) }
+    player.current?.release(bank, pad)
+  }, [bank])
 
   const stopAll = useCallback(() => {
+    player.current?.transportStop()
     player.current?.stopAll()
     wave.current?.pause()
   }, [])
@@ -403,7 +439,74 @@ function Editor({ id, source }) {
   }, [bank, selectedPad, cacheKey, commit, notify])
   const swap = useCallback((a, b) => { commit((p) => swapPads(p, bank, a, b)); setSelectedPad(b) }, [commit, bank])
   const clearOnePad = useCallback((pad) => commit((p) => clearPad(p, bank, pad)), [commit, bank])
-  const padInfo = useMemo(() => ({}), [])
+  const padInfo = useMemo(() => (cur.vintage && cur.vintage !== 'off' ? { vintage: cur.vintage } : {}), [cur.vintage])
+  const exportSlices = useMemo(() => slices.map((x) => ({ ...x, ...padInfo })), [slices, padInfo])
+  const setVintage = useCallback((vintage) => commit((p) => updateBank(p, bank, { vintage })), [commit, bank])
+
+  // --- sequencer -----------------------------------------------------------------------------
+  const seq = program.seq ?? emptySeq()
+  const allowedPatterns = health?.features?.patterns_beyond_b === false ? FREE_PATTERNS : PATTERN_IDS.length
+  const editSeq = useCallback((fn, coalesce) => commit((p) => ({ ...p, seq: fn(p.seq ?? emptySeq()) }), coalesce), [commit])
+  // the engine's copy of the pads (sequencer triggers) and the pass it plays
+  useEffect(() => {
+    const pl = player.current
+    if (!pl || !src) return
+    pl.setProgram({
+      banks: program.banks.map((b) => ({
+        mono: b.mono, vintage: b.vintage || 'off',
+        pads: Array.from({ length: PADS_PER_BANK }, (_, i) => {
+          const x = padSlice(b, i)
+          if (!x) return null
+          const k = pitchedKey(x)
+          return { ...x, pitched: k && pl.pitched.has(k) ? `p:${k}` : null }
+        }),
+      })),
+    })
+  }, [program, src, pitchedVer])
+  useEffect(() => {
+    if (!player.current || !src || !bpm) return
+    player.current.setPass({ ...passEvents(seq), bpm, swing: seq.swing }, seqOpts.loop)
+  }, [seq, bpm, seqOpts.loop, src])
+  useEffect(() => { player.current?.setMetronome(seqOpts.metronome) }, [seqOpts.metronome, src])
+
+  const take = useRef(0)
+  const seqRefs = useRef({})
+  useEffect(() => { seqRefs.current = { seqOpts, seq } })
+  const seqPlay = useCallback((record = false) => {
+    const pl = player.current
+    if (!pl) return
+    if (record) {
+      take.current++
+      if (!seqRefs.current.seqOpts.overdub) editSeq((s0) => ({ ...s0, patterns: { ...s0.patterns, [s0.current]: clearPattern(s0.patterns[s0.current]) } }), `take-${take.current}`)
+    }
+    const o = seqRefs.current.seqOpts
+    pl.transportPlay({ countIn: o.countIn, metronome: o.metronome, record })
+  }, [editSeq])
+  const seqStop = useCallback(() => player.current?.transportStop(), [])
+  const seqRecord = useCallback(() => {
+    const pl = player.current
+    if (!pl) return
+    if (pl.transport.playing) {
+      if (!pl.transport.recording) take.current++
+      pl.setRecording(!pl.transport.recording)
+    } else {
+      seqPlay(true)
+    }
+  }, [seqPlay])
+  // recorded hits (live pads, MIDI, note repeat) land in the current pattern, quantized; one take = one undo step
+  useEffect(() => {
+    const pl = player.current
+    if (!pl || !src) return undefined
+    return pl.on((m) => {
+      if (m.type !== 'hit') return
+      const { seqOpts: o, seq: sq } = seqRefs.current
+      if (sq.mode === 'song' && sq.song.length) return
+      editSeq((s0) => ({
+        ...s0,
+        patterns: { ...s0.patterns, [s0.current]: addHit(s0.patterns[s0.current], { bank: m.bank, pad: m.pad, vel: m.vel, tick: unswingTick(m.tick, s0.swing) }, o.quantize) },
+      }), `take-${take.current}`)
+    })
+  }, [src, editSeq])
 
   const onRegionCreate = useCallback(({ start, end }) => {
     if (slices.length >= PADS_PER_BANK) return notify(`Bank ${BANKS[bank]} is full (16 pads) — pick an empty bank first.`, 'info')
@@ -455,6 +558,42 @@ function Editor({ id, source }) {
     })
   }, [slices, selectedId, selection, analysis, duration, playheadTime])
 
+  // --- MIDI controllers -----------------------------------------------------------------------
+  useEffect(() => {
+    let alive = true
+    host.getSetting('midiMap').then((m) => alive && m && setMidiMap({ ...emptyMap(), ...m })).catch(() => {})
+    midiInput.start().then(() => alive && setMidiDevices(midiInput.list))
+    const off = midiInput.on((m) => { if (m.type === 'devices') setMidiDevices(midiInput.list) })
+    return () => { alive = false; off() }
+  }, [host])
+  const midiRefs = useRef({})
+  useEffect(() => { midiRefs.current = { midiMap, midiLearning, midiTarget, triggerPad, releasePad, seqPlay, seqStop, seqRecord } })
+  useEffect(() => midiInput.on((m) => {
+    if (m.type === 'devices') return
+    const r = midiRefs.current
+    const type = m.type === 'cc' ? 'cc' : 'note'
+    if (r.midiLearning && r.midiTarget && m.type !== 'off' && !(m.type === 'cc' && m.value === 0)) {
+      const next = midiLearn(r.midiMap, r.midiTarget, type, m.num)
+      if (next !== r.midiMap) {
+        setMidiMap(next)
+        host.setSetting('midiMap', next).catch(() => {})
+        notify(`MIDI ${type === 'cc' ? 'CC' : 'note'} ${m.num} → ${r.midiTarget.replace('pad:', 'pad ').replace(/pad (\d+)/, (_, n) => `pad ${Number(n) + 1}`)}`, 'success')
+        setMidiTarget(null)
+      }
+      return
+    }
+    const what = midiResolve(r.midiMap, type, m.num)
+    if (!what) return
+    if (what.kind === 'pad') {
+      if (m.type === 'on') r.triggerPad(what.pad, m.value)
+      else if (m.type === 'off') r.releasePad(what.pad)
+    } else if (m.type === 'on' || (m.type === 'cc' && m.value > 0)) {
+      if (what.button === 'play') r.seqPlay()
+      else if (what.button === 'stop') r.seqStop()
+      else if (what.button === 'record') r.seqRecord()
+    }
+  }), [host, notify])
+
   // --- keyboard ------------------------------------------------------------------------------
   useKeyboard((e) => {
     const k = e.key.toLowerCase()
@@ -462,6 +601,11 @@ function Editor({ id, source }) {
       e.preventDefault()
       wave.current?.playPause()
       return
+    }
+    if (e.key === 'Enter') {
+      e.preventDefault()
+      if (e.shiftKey) return seqRecord()
+      return player.current?.transport.playing ? seqStop() : seqPlay()
     }
     if (k === 'l') return toggleLoop()
     if (k === 'escape') return stopAll()
@@ -500,13 +644,13 @@ function Editor({ id, source }) {
       const res = await host.download({
         path: `/tracks/${id}/export`,
         filename: buildFilename(track.title, analysis.bpm, analysis.key, s.name),
-        body: { ...options, slices: await apiSlices(id, [s]), format: 'wav' },
+        body: { ...options, slices: await apiSlices(id, [{ ...s, ...padInfo }]), format: 'wav' },
       })
       notify(`Saved ${res.path.split(/[\\/]/).pop()}`, 'success', { label: 'Show in folder', run: () => host.showItemInFolder(res.path) })
     } catch (e) {
       notify(e.message, 'error')
     }
-  }, [host, id, track, analysis, options, notify])
+  }, [host, id, track, analysis, options, notify, padInfo])
 
   const stableOptions = useMemo(() => options, [options])
 
@@ -588,14 +732,22 @@ function Editor({ id, source }) {
         <PadGrid banks={program.banks} bank={bank} setBank={setBank} allowedBanks={allowedBanks} activePads={activePads}
           selectedPad={selectedPad} onTrigger={triggerPad} onRelease={releasePad} onMono={setMono} onChokeAll={chokeAll}
           onClear={clearCurrent} onStop={stopAll} trackId={id} options={stableOptions} bankInfo={padInfo}
-          onSelectPad={setSelectedPad} onSwap={swap} onTrim={openTrim} onMenu={(pad, at) => setMenu({ pad, at })} />
+          onSelectPad={setSelectedPad} onSwap={swap} onTrim={openTrim} onMenu={(pad, at) => setMenu({ pad, at })}>
+          <select className="input input-small" value={cur.vintage || 'off'} onChange={(e) => setVintage(e.target.value)} data-testid="bank-vintage"
+            disabled={health?.features?.vintage === false}
+            title={health?.features?.vintage === false ? 'Vintage mode is a Pro feature' : 'Vintage character for every pad in this bank (playback and export)'}>
+            <option value="off">Vintage: off</option>
+            <option value="12bit">Vintage 12-bit</option>
+            <option value="16bit">Vintage 16-bit</option>
+          </select>
+        </PadGrid>
         <div className="editor-side">
-          {sideTab === 'slices' && <ExportPanel track={track} slices={slices} bank={bank} options={options} setOptions={setOptions} />}
+          {sideTab === 'slices' && <ExportPanel track={track} slices={exportSlices} bank={bank} options={options} setOptions={setOptions} />}
           <div className="panel slices-panel">
             <div className="panel-title side-tabs">
-              {[['slices', `Slices · Bank ${BANKS[bank]}`], ['pad', 'Pad']].map(([k, l]) => (
+              {[['slices', `Slices · Bank ${BANKS[bank]}`], ['pad', 'Pad'], ['seq', 'Sequencer']].map(([k, l]) => (
                 <button key={k} className={`side-tab ${sideTab === k ? 'side-tab-on' : ''}`} onClick={() => setSideTab(k)} data-testid={`side-tab-${k}`}
-                  title={k === 'pad' ? 'Shape the selected pad: tune, envelope, filter, velocity, pan' : 'The slices of this bank'}>{l}</button>
+                  title={{ pad: 'Shape the selected pad: tune, envelope, filter, velocity, pan', slices: 'The slices of this bank', seq: 'Step sequencer, patterns, song, recording, MIDI' }[k]}>{l}</button>
               ))}
               {sideTab === 'slices' && <span className="muted small">drag ⠿ into your DAW · double-click to trim</span>}
             </div>
@@ -607,6 +759,14 @@ function Editor({ id, source }) {
                     onTrim={() => openTrim(s.pad)} trackId={id} options={stableOptions} />
                 ))}
                 {slices.length === 0 && <div className="muted">Empty bank — select a region and hit Chop.</div>}
+              </div>
+            )}
+            {sideTab === 'seq' && (
+              <div className="slice-list seq-scroll">
+                <SeqPanel seq={seq} onSeq={editSeq} bank={bank} banks={program.banks} player={livePlayer} opts={seqOpts} setOpts={setSeqOpts}
+                  onPlay={() => seqPlay()} onStop={seqStop} onRecord={seqRecord} onPreview={(pad) => { const x = padSlice(cur, pad); if (x) playSlice(x, pad) }}
+                  allowedPatterns={allowedPatterns} bpm={bpm}
+                  midi={{ learning: midiLearning, setLearning: (on) => { setMidiLearning(on); setMidiTarget(null) }, target: midiTarget, setTarget: setMidiTarget, devices: midiDevices }} />
               </div>
             )}
             {sideTab === 'pad' && (

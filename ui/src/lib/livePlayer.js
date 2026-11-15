@@ -65,24 +65,68 @@ export class LivePlayer {
     this.post({ type: 'on', slice: plain(slice), bank, pad, mono, vel, at: when,
       pitched: pitchedKey && this.pitched.has(pitchedKey) ? `p:${pitchedKey}` : null })
     if (typeof window !== 'undefined') {
-      window.__ripperDebug = { ...(window.__ripperDebug || {}), padsTriggered: this.triggered, audioState: this.ctx.state }
+      window.__ripperDebug = { ...(window.__ripperDebug || {}), padsTriggered: this.triggered, audioState: this.ctx.state, lastPad: { bank, pad, vel } }
     }
   }
 
   release(bank, pad, when) { this.post({ type: 'off', bank, pad, at: when }) }
+
+  // --- sequencer transport (src/dsp/transport.js) --------------------------------------------
+  /** Pads per bank for the sequencer: {banks: [{mono, vintage, pads: [slice|null] x16}]}. */
+  setProgram(prog) {
+    this.post({ type: 'program', program: { banks: prog.banks.map((b) => ({ ...b, pads: b.pads.map((s) => (s ? { ...plain(s), pitched: s.pitched || null } : null)) })) } })
+  }
+
+  setPass(pass, loop = true) { this.post({ type: 'pass', pass, loop }) }
+
+  transportPlay({ countIn = false, metronome = false, record = false } = {}) {
+    this.resume()
+    this.post({ type: 'play', at: this.ctx.currentTime + 0.02, countIn, metronome, record })
+  }
+
+  transportStop() { this.post({ type: 'transportStop' }) }
+
+  setRecording(on) { this.post({ type: 'record', on }) }
+
+  setMetronome(on) { this.post({ type: 'metronome', on }) }
+
+  /** Note repeat while a pad is held: {bank, pad, vel, rate (ticks)} or null. */
+  setRepeat(r) {
+    if (r) this.resume()
+    this.post({ type: 'repeat', repeat: r })
+  }
+
+  get transport() { return { playing: !!this.status.transport, recording: !!this.status.recording, tick: this.status.tick, pass: this.status.pass } }
+
+  /** Tests: record the frames the sequencer fires on, then fetch them. */
+  traceFires(on) { this.post({ type: 'traceFires', on }) }
+
+  fires() {
+    return new Promise((resolve) => {
+      const off = this.on((m) => { if (m.type === 'fires') { off(); resolve(m.fires) } })
+      this.post({ type: 'getFires' })
+    })
+  }
 
   stopAll(when) { this.post({ type: 'stop', at: when }) }
 
   get playing() { return this.status.playing }
 
   dispose() {
+    this.post({ type: 'stop' })
+    this.post({ type: 'removeSource', id: 'main' })
+    for (const k of this.pitched) this.post({ type: 'removeSource', id: `p:${k}` })
     try { this.node.disconnect() } catch { /* already */ }
     this.node.port.onmessage = null
+    this.listeners.clear()
+    this.mainSrc = null
+    this.pitchedSrc = null
+    if (typeof window !== 'undefined' && window.__ripperTest?.player === this) window.__ripperTest.player = null
   }
 }
 
 /** Only the fields the engine reads (no functions / React state). */
-function plain(s) {
+export function plain(s) {
   const { start, end, reverse, gain, fadeIn, fadeOut, choke, padMode, tune, fine, keepLength, env, filter, velVol, velFilter, pan, fx } = s
   return { start, end, reverse, gain, fadeIn, fadeOut, choke, padMode, tune, fine, keepLength, env, filter, velVol, velFilter, pan, fx }
 }
