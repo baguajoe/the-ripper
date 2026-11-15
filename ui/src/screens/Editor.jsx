@@ -151,7 +151,11 @@ function Editor({ id, source }) {
         let pcm
         try { pcm = decodeWav(bytes) } catch { pcm = fromAudioBuffer(buf) }
         registerSource(id, source, pcm)
-        if (!player.current) player.current = await LivePlayer.create(ctx)
+        if (!player.current) {
+          const pl = await LivePlayer.create(ctx)
+          if (!alive) { pl.dispose(); return }
+          player.current = pl
+        }
         if (!alive) return
         setLivePlayer(player.current)
         player.current.setSource(pcm)
@@ -165,7 +169,10 @@ function Editor({ id, source }) {
     })()
     return () => {
       alive = false
-      player.current?.stopAll()
+      // leaving the editor: free the pad engine (and its copy of the track) entirely
+      player.current?.transportStop()
+      player.current?.dispose()
+      player.current = null
       if (url) URL.revokeObjectURL(url)
     }
   }, [id, source, host])

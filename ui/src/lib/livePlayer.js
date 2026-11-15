@@ -113,8 +113,15 @@ export class LivePlayer {
   get playing() { return this.status.playing }
 
   dispose() {
+    this.post({ type: 'stop' })
+    this.post({ type: 'removeSource', id: 'main' })
+    for (const k of this.pitched) this.post({ type: 'removeSource', id: `p:${k}` })
     try { this.node.disconnect() } catch { /* already */ }
     this.node.port.onmessage = null
+    this.listeners.clear()
+    this.mainSrc = null
+    this.pitchedSrc = null
+    if (typeof window !== 'undefined' && window.__ripperTest?.player === this) window.__ripperTest.player = null
   }
 }
 
