@@ -50,7 +50,7 @@ async function download(index) {
   const before = new Set(fs.readdirSync(dirs.downloads))
   const onPad = await win.getByTestId('pad-panel').isVisible()
   await win.getByTestId('side-tab-slices').click()
-  await win.getByTestId(`slice-download-${index}`).click()
+  await win.getByTestId(`slice-download-${index}`).dispatchEvent('click') // may be scrolled out of a small window
   let file
   await expect.poll(() => {
     file = fs.readdirSync(dirs.downloads).find((f) => f.endsWith('.wav') && !before.has(f))
