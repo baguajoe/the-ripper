@@ -15,8 +15,9 @@ export function voiceFrames(source, slice, sr, pitched = null) {
  * a release fits inside the end), with its shaping, bank processing and effects tail.
  * source: {channels, sr}. Returns [L, R] Float32Arrays at `sr` (default: the source's rate).
  */
-export function renderPad(source, slice, { sr = source.sr, vel = 127, pitched = null, bankFx = null, tail = 0, bank = 0 } = {}) {
+export function renderPad(source, slice, { sr = source.sr, vel = 127, pitched = null, bankFx = null, tail = 0, bank = 0, bpm = 120 } = {}) {
   const eng = new Engine(sr)
+  eng.bpm = bpm
   eng.setSource('main', source.channels, source.sr)
   if (pitched) eng.setSource('pitched', pitched.channels, pitched.sr)
   if (bankFx) eng.bankFx[bank] = bankFx

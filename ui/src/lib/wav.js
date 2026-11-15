@@ -43,5 +43,27 @@ export function decodeWav(buf) {
   return { sr, channels }
 }
 
+/** An AudioBuffer-shaped view of {sr, channels} (no copy) for the waveform. */
+export const asAudioBuffer = (p) => ({
+  sampleRate: p.sr, numberOfChannels: p.channels.length, length: p.channels[0].length,
+  duration: p.channels[0].length / p.sr, getChannelData: (c) => p.channels[c],
+})
+
 /** {sr, channels} from a Web Audio AudioBuffer (copies). */
 export const fromAudioBuffer = (b) => ({ sr: b.sampleRate, channels: Array.from({ length: b.numberOfChannels }, (_, c) => b.getChannelData(c).slice()) })
+
+/** {sr, channels} -> 32-bit float WAV bytes (lossless; the engine converts it on import). */
+export function encodeWav({ sr, channels }) {
+  const nch = channels.length
+  const n = channels[0].length
+  const buf = new ArrayBuffer(44 + n * nch * 4)
+  const dv = new DataView(buf)
+  const str = (o, t) => { for (let i = 0; i < 4; i++) dv.setUint8(o + i, t.charCodeAt(i)) }
+  str(0, 'RIFF'); dv.setUint32(4, 36 + n * nch * 4, true); str(8, 'WAVE')
+  str(12, 'fmt '); dv.setUint32(16, 16, true); dv.setUint16(20, 3, true); dv.setUint16(22, nch, true)
+  dv.setUint32(24, sr, true); dv.setUint32(28, sr * nch * 4, true); dv.setUint16(32, nch * 4, true); dv.setUint16(34, 32, true)
+  str(36, 'data'); dv.setUint32(40, n * nch * 4, true)
+  let o = 44
+  for (let i = 0; i < n; i++) for (let c = 0; c < nch; c++) { dv.setFloat32(o, channels[c][i], true); o += 4 }
+  return buf
+}

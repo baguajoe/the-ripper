@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { Link, useParams, useSearchParams } from 'react-router-dom'
+import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { api } from '../api.js'
 import { useApp } from '../context.js'
 import { useKeyboard } from '../hooks/useKeyboard.js'
@@ -12,13 +12,13 @@ import ExportPanel from '../components/ExportPanel.jsx'
 import { divisionBeats, MIN_SLICE, selectionSlices, shiftDownbeat, snap, splitAt } from '../lib/grid.js'
 import { BANKS, keyToPad, PADS_PER_BANK } from '../lib/pads.js'
 import { BANK_COUNT, FREE_BANKS, chopBanks, clearBank, clearPad, describeChop, emptyProgram, nextEmptyBank, padSettings, padSlice, pastePad, placeChop,
-  swapPads, updateBank, updateSlices, withDefaults } from '../lib/program.js'
+  scaleProgram, swapPads, updateBank, updateSlices, withDefaults } from '../lib/program.js'
 import { canRedo, canUndo, initHistory, push, redo, undo } from '../lib/history.js'
 import { barRange, barsFrom, formatBarPos, selectionBars, snapSelection } from '../lib/selection.js'
 import { LivePlayer } from '../lib/livePlayer.js'
 import { DEFAULT_EXPORT, apiSlices } from '../lib/exportSpec.js'
-import { decodeWav, fromAudioBuffer } from '../lib/wav.js'
-import { registerSource } from '../lib/clips.js'
+import { asAudioBuffer, decodeWav, encodeWav, fromAudioBuffer } from '../lib/wav.js'
+import { registerSource, setTrackBpm } from '../lib/clips.js'
 import { getPitched } from '../lib/pitched.js'
 import { pitchedKey } from '../dsp/params.js'
 import { voiceFrames } from '../dsp/render.js'
@@ -27,6 +27,7 @@ import PadPanel from '../components/PadPanel.jsx'
 import TrimEditor from '../components/TrimEditor.jsx'
 import { PadMenu } from '../components/PadGrid.jsx'
 import SeqPanel from '../components/SeqPanel.jsx'
+import FxPanel from '../components/FxPanel.jsx'
 import { FREE_PATTERNS, PATTERN_IDS, REPEAT_RATES, addHit, clearPattern, emptySeq, passEvents, unswingTick } from '../lib/sequence.js'
 import { emptyMap, learn as midiLearn, midiInput, resolve as midiResolve } from '../lib/midi.js'
 import { buildFilename } from '../lib/filenames.js'
@@ -86,6 +87,10 @@ function Editor({ id, source }) {
   const [seqOpts, setSeqOptsState] = useState(cached?.seqOpts ?? DEFAULT_SEQ_OPTS)
   const setSeqOpts = useCallback((patch) => setSeqOptsState((o) => ({ ...o, ...patch })), [])
   const [pitchedVer, setPitchedVer] = useState(0)
+  const [resampling, setResampling] = useState(null) // 'pass' | 'live' | null
+  const [match, setMatch] = useState({ bpm: '', key: '' })
+  const [fitting, setFitting] = useState(false)
+  const navigate = useNavigate()
   const [livePlayer, setLivePlayer] = useState(null) // the player, as state for components that subscribe to it
   const [midiMap, setMidiMap] = useState(emptyMap())
   const [midiLearning, setMidiLearning] = useState(false)
@@ -145,11 +150,12 @@ function Editor({ id, source }) {
         if (!alive) return
         url = URL.createObjectURL(new Blob([bytes], { type: 'audio/wav' }))
         const ctx = host.audio.getContext()
-        const buf = await ctx.decodeAudioData(bytes.slice(0))
-        if (!alive) return
-        // the pad engine plays the WAV at its own rate (decodeAudioData resampled it for display)
+        // The pad engine plays the WAV at its own rate; the waveform draws from the same samples
+        // (one copy of a long song in memory, not a Web Audio re-decode at the device rate too).
         let pcm
-        try { pcm = decodeWav(bytes) } catch { pcm = fromAudioBuffer(buf) }
+        try { pcm = decodeWav(bytes) } catch { pcm = fromAudioBuffer(await ctx.decodeAudioData(bytes.slice(0))) }
+        if (!alive) return
+        const buf = asAudioBuffer(pcm)
         registerSource(id, source, pcm)
         if (!player.current) {
           const pl = await LivePlayer.create(ctx)
@@ -452,6 +458,7 @@ function Editor({ id, source }) {
     const pl = player.current
     if (!pl || !src) return
     pl.setProgram({
+      bpm, master: program.master || null,
       banks: program.banks.map((b) => ({
         mono: b.mono, vintage: b.vintage || 'off',
         pads: Array.from({ length: PADS_PER_BANK }, (_, i) => {
@@ -462,7 +469,8 @@ function Editor({ id, source }) {
         }),
       })),
     })
-  }, [program, src, pitchedVer])
+  }, [program, src, pitchedVer, bpm])
+  useEffect(() => { if (bpm) setTrackBpm(id, bpm) }, [id, bpm])
   useEffect(() => {
     if (!player.current || !src || !bpm) return
     player.current.setPass({ ...passEvents(seq), bpm, swing: seq.swing }, seqOpts.loop)
@@ -483,6 +491,65 @@ function Editor({ id, source }) {
     pl.transportPlay({ countIn: o.countIn, metronome: o.metronome, record })
   }, [editSeq])
   const seqStop = useCallback(() => player.current?.transportStop(), [])
+
+  // --- fit the sample to the project tempo / key -> a new track, chops carried over ----------
+  const fitToProject = useCallback(async () => {
+    const body = {}
+    if (match.bpm && Math.abs(Number(match.bpm) - bpm) > 1e-6) body.bpm = Number(match.bpm)
+    if (match.key && match.key !== analysis?.key) body.key = match.key
+    if (!body.bpm && !body.key) return notify('Pick a different tempo or key to match.', 'info')
+    setFitting(true)
+    try {
+      const r = await api.fitTrack(id, body)
+      for (;;) {
+        await new Promise((res) => setTimeout(res, 400))
+        const j = await api.getJob(r.job_id)
+        if (j.status === 'error') throw new Error(j.error || 'failed')
+        if (j.status === 'done') break
+      }
+      // the new track opens with this one's chops, pads and patterns (times scaled by the stretch)
+      sessionCache.set(`${r.track_id}:mix`, { ...sessionCache.get(cacheKey), hist: initHistory(scaleProgram(histRef.current.present, r.ratio)) })
+      notify(`Fitted${body.bpm ? ` to ${body.bpm} BPM` : ''}${body.key ? ` in ${body.key}` : ''}`, 'success')
+      navigate(`/track/${r.track_id}`)
+    } catch (e) {
+      notify(`Fit failed: ${e.message}`, 'error')
+    } finally {
+      setFitting(false)
+    }
+  }, [match, bpm, analysis, id, cacheKey, notify, navigate])
+
+  // --- resample: record the pads / sequencer (with shaping + effects) into a new track ---------
+  const importResample = useCallback(async (pcm, label) => {
+    try {
+      const file = new File([encodeWav(pcm)], `${track.title} (resampled ${label}).wav`, { type: 'audio/wav' })
+      const { job_id: jobId, track_id: newId } = await api.upload(file)
+      window.__ripperTest = { ...(window.__ripperTest || {}), lastResample: { trackId: newId, frames: pcm.channels[0].length, sr: pcm.sr } }
+      notify('Resampled — importing it as a new track…', 'info')
+      for (;;) {
+        await new Promise((r) => setTimeout(r, 400))
+        const j = await api.getJob(jobId)
+        if (j.status === 'error') throw new Error(j.error || 'import failed')
+        if (j.status === 'done') break
+      }
+      notify('Resampled track ready', 'success', { label: 'Open', run: () => navigate(`/track/${newId}`) })
+    } catch (e) {
+      notify(`Resample failed: ${e.message}`, 'error')
+    }
+  }, [track, notify, navigate])
+  const resample = useCallback(async (mode) => {
+    const pl = player.current
+    if (!pl) return
+    if (mode === 'live' && resampling === 'live') { pl.stopCapture(); return }
+    if (resampling) return
+    setResampling(mode)
+    try {
+      const pcm = mode === 'pass' ? await pl.resamplePass() : await pl.startCapture()
+      if (pcm.channels[0].length < pcm.sr * 0.5) notify('Nothing long enough was recorded (min 0.5 s).', 'info')
+      else await importResample(pcm, mode === 'pass' ? (seq.mode === 'song' ? 'song' : `pattern ${seq.current}`) : 'live')
+    } finally {
+      setResampling(null)
+    }
+  }, [resampling, importResample, notify, seq])
   const seqRecord = useCallback(() => {
     const pl = player.current
     if (!pl) return
@@ -673,6 +740,17 @@ function Editor({ id, source }) {
           <span className="muted small">Downbeat</span>
           <button className="btn btn-small" onClick={() => regrid({ downbeat: shiftDownbeat(analysis.downbeat, analysis.bpm, 1) })} disabled={busy} data-testid="downbeat-right">▶</button>
         </div>
+        <div className="match-ctl" title={health?.features?.fit === false ? 'Fit to tempo / key is a Pro feature' : 'Match to: time-stretch to a project tempo and/or shift to a project key (new track, chops carried over)'}>
+          <span className="muted small">Match</span>
+          <input className="input input-num" type="number" min="40" max="300" step="0.1" placeholder={String(bpm)} value={match.bpm}
+            onChange={(e) => setMatch((m) => ({ ...m, bpm: e.target.value }))} data-testid="match-bpm" aria-label="Project BPM" />
+          <select className="input input-small" value={match.key} onChange={(e) => setMatch((m) => ({ ...m, key: e.target.value }))} data-testid="match-key" aria-label="Project key">
+            <option value="">key</option>
+            {['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'].flatMap((n) => [n, `${n}m`]).map((k) => <option key={k} value={k}>{k}</option>)}
+          </select>
+          <button className="btn btn-small" onClick={fitToProject} disabled={fitting || health?.features?.fit === false || (!match.bpm && !match.key)} data-testid="match-fit">
+            {fitting ? 'Fitting…' : 'Fit'}</button>
+        </div>
         <Link to={`/track/${id}/stems`} className="btn" data-testid="open-stems">Stems ›</Link>
       </div>
 
@@ -745,9 +823,9 @@ function Editor({ id, source }) {
           {sideTab === 'slices' && <ExportPanel track={track} slices={exportSlices} bank={bank} options={options} setOptions={setOptions} />}
           <div className="panel slices-panel">
             <div className="panel-title side-tabs">
-              {[['slices', `Slices · Bank ${BANKS[bank]}`], ['pad', 'Pad'], ['seq', 'Sequencer']].map(([k, l]) => (
+              {[['slices', `Slices · Bank ${BANKS[bank]}`], ['pad', 'Pad'], ['fx', 'Effects'], ['seq', 'Sequencer']].map(([k, l]) => (
                 <button key={k} className={`side-tab ${sideTab === k ? 'side-tab-on' : ''}`} onClick={() => setSideTab(k)} data-testid={`side-tab-${k}`}
-                  title={{ pad: 'Shape the selected pad: tune, envelope, filter, velocity, pan', slices: 'The slices of this bank', seq: 'Step sequencer, patterns, song, recording, MIDI' }[k]}>{l}</button>
+                  title={{ pad: 'Shape the selected pad: tune, envelope, filter, velocity, pan', slices: 'The slices of this bank', seq: 'Step sequencer, patterns, song, recording, MIDI', fx: 'Pad and master effects' }[k]}>{l}</button>
               ))}
               {sideTab === 'slices' && <span className="muted small">drag ⠿ into your DAW · double-click to trim</span>}
             </div>
@@ -765,8 +843,15 @@ function Editor({ id, source }) {
               <div className="slice-list seq-scroll">
                 <SeqPanel seq={seq} onSeq={editSeq} bank={bank} banks={program.banks} player={livePlayer} opts={seqOpts} setOpts={setSeqOpts}
                   onPlay={() => seqPlay()} onStop={seqStop} onRecord={seqRecord} onPreview={(pad) => { const x = padSlice(cur, pad); if (x) playSlice(x, pad) }}
-                  allowedPatterns={allowedPatterns} bpm={bpm}
+                  allowedPatterns={allowedPatterns} bpm={bpm} resampling={resampling} onResample={resample} canResample={health?.features?.resample !== false}
                   midi={{ learning: midiLearning, setLearning: (on) => { setMidiLearning(on); setMidiTarget(null) }, target: midiTarget, setTarget: setMidiTarget, devices: midiDevices }} />
+              </div>
+            )}
+            {sideTab === 'fx' && (
+              <div className="slice-list">
+                <FxPanel slice={selectedSlice} bank={bank} locked={health?.features?.effects === false}
+                  onPadFx={(fx) => selectedSlice && updateSlice(selectedSlice.id, { fx })}
+                  master={program.master} onMaster={(master) => commit((p) => ({ ...p, master }), 'master-fx')} />
               </div>
             )}
             {sideTab === 'pad' && (

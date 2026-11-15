@@ -55,7 +55,7 @@ function Step({ on, vel, accent, beat, playhead, onToggle, onVelocity, testid, t
  * swing, patterns A–H, song chain, transport, live record, note repeat, MIDI learn.
  */
 export default function SeqPanel({ seq, onSeq, bank, banks, player, opts, setOpts, onPlay, onStop, onRecord, onPreview,
-  allowedPatterns, midi, bpm }) {
+  allowedPatterns, midi, bpm, resampling, onResample, canResample = true }) {
   const pos = usePosition(player)
   const p = seq.patterns[seq.current] || emptyPattern()
   const steps = p.steps
@@ -91,6 +91,11 @@ export default function SeqPanel({ seq, onSeq, bank, banks, player, opts, setOpt
         <label className="chk" title="One bar of clicks before playing / recording"><input type="checkbox" checked={opts.countIn} onChange={(e) => setOpts({ countIn: e.target.checked })} data-testid="seq-countin" />Count-in</label>
         <label className="chk" title="Metronome click"><input type="checkbox" checked={opts.metronome} onChange={(e) => setOpts({ metronome: e.target.checked })} data-testid="seq-metronome" />Click</label>
         <span className="muted small" data-testid="seq-bpm" title="Project tempo">{Math.round(bpm * 10) / 10} BPM</span>
+        <button className="btn btn-small" onClick={() => onResample('pass')} disabled={!canResample || !!resampling} data-testid="resample-pass"
+          title={canResample ? 'Resample: record one pass of the pattern (or song) with all shaping and effects into a new track' : 'Resample is a Pro feature'}>
+          {resampling === 'pass' ? 'Resampling…' : '⤓ Resample'}</button>
+        <button className={`btn btn-small ${resampling === 'live' ? 'btn-rec-on' : ''}`} onClick={() => onResample('live')} disabled={!canResample || resampling === 'pass'} data-testid="resample-live"
+          title="Resample live: record everything you play until you click again, into a new track">{resampling === 'live' ? '■ Stop resample' : '⏺ Live'}</button>
       </div>
       <div className="seq-row">
         <div className="seg seg-small" role="group" aria-label="Patterns">
