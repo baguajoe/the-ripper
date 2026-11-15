@@ -11,11 +11,21 @@ import BpmControls from '../components/BpmControls.jsx'
 import ExportPanel from '../components/ExportPanel.jsx'
 import { divisionBeats, MIN_SLICE, selectionSlices, shiftDownbeat, snap, splitAt } from '../lib/grid.js'
 import { BANKS, keyToPad, PADS_PER_BANK } from '../lib/pads.js'
-import { BANK_COUNT, FREE_BANKS, chopBanks, clearBank, describeChop, emptyProgram, nextEmptyBank, placeChop, updateBank, updateSlices, withDefaults } from '../lib/program.js'
+import { BANK_COUNT, FREE_BANKS, chopBanks, clearBank, clearPad, describeChop, emptyProgram, nextEmptyBank, padSettings, padSlice, pastePad, placeChop,
+  swapPads, updateBank, updateSlices, withDefaults } from '../lib/program.js'
 import { canRedo, canUndo, initHistory, push, redo, undo } from '../lib/history.js'
 import { barRange, barsFrom, formatBarPos, selectionBars, snapSelection } from '../lib/selection.js'
-import { SlicePlayer } from '../lib/slicePlayer.js'
-import { DEFAULT_EXPORT, toApiSlice } from '../lib/exportSpec.js'
+import { LivePlayer } from '../lib/livePlayer.js'
+import { DEFAULT_EXPORT, apiSlices } from '../lib/exportSpec.js'
+import { decodeWav, fromAudioBuffer } from '../lib/wav.js'
+import { registerSource } from '../lib/clips.js'
+import { getPitched } from '../lib/pitched.js'
+import { pitchedKey } from '../dsp/params.js'
+import { voiceFrames } from '../dsp/render.js'
+import { DEFAULT_TRIM, moveEdge, snapZero } from '../lib/trim.js'
+import PadPanel from '../components/PadPanel.jsx'
+import TrimEditor from '../components/TrimEditor.jsx'
+import { PadMenu } from '../components/PadGrid.jsx'
 import { buildFilename } from '../lib/filenames.js'
 import { formatTime } from '../lib/format.js'
 
@@ -30,6 +40,7 @@ function Playhead({ subscribe, duration }) {
 // The pad program (with its undo history), current bank, selection and chop settings survive
 // navigation (Editor <-> Stems) for the session.
 const sessionCache = new Map()
+let padClipboard = null // {key: editor cacheKey, slice} — copy / paste pads within one track + source
 const DEFAULT_CHOP = { mode: 'even', count: 16, division: '1', sensitivity: 0.5, cap: 16, snap: true, snapDivision: '1', replace: false }
 const RECHOP_KEYS = ['mode', 'count', 'division', 'sensitivity', 'cap']
 const DEFAULT_BARS = 4
@@ -59,7 +70,15 @@ function Editor({ id, source }) {
   const [bank, setBankState] = useState(cached?.bank ?? 0)
   const [selection, setSelectionState] = useState(cached?.selection ?? null)
   const [chop, setChopState] = useState(cached?.chop ?? DEFAULT_CHOP)
-  const [selectedId, setSelectedId] = useState(null)
+  const [selectedId, setSelectedIdState] = useState(null)
+  const [selectedPad, setSelectedPad] = useState(0)
+  const [src, setSrc] = useState(null) // {sr, channels}: the audio the pad engine plays
+  const [trimOpts, setTrimOpts] = useState(cached?.trimOpts ?? DEFAULT_TRIM)
+  const [trimId, setTrimId] = useState(null)
+  const [audition, setAudition] = useState(false)
+  const [sideTab, setSideTab] = useState(cached?.sideTab ?? 'slices')
+  const [menu, setMenu] = useState(null) // {pad, at}
+  const [onsets, setOnsets] = useState(null)
   const [loop, setLoop] = useState({ active: false, start: 0, end: 0 })
   const [activePads, setActivePads] = useState(() => new Set())
   const [busy, setBusy] = useState(false)
@@ -80,7 +99,7 @@ function Editor({ id, source }) {
   const anchorBar = useRef(null)
   const sensTimer = useRef(null)
 
-  useEffect(() => { sessionCache.set(cacheKey, { hist, bank, selection, chop }) }, [cacheKey, hist, bank, selection, chop])
+  useEffect(() => { sessionCache.set(cacheKey, { hist, bank, selection, chop, trimOpts, sideTab }) }, [cacheKey, hist, bank, selection, chop, trimOpts, sideTab])
 
   const program = hist.present
   const cur = program.banks[bank]
@@ -116,8 +135,15 @@ function Editor({ id, source }) {
         const ctx = host.audio.getContext()
         const buf = await ctx.decodeAudioData(bytes.slice(0))
         if (!alive) return
-        if (!player.current) player.current = new SlicePlayer(ctx)
-        player.current.setBuffer(buf)
+        // the pad engine plays the WAV at its own rate (decodeAudioData resampled it for display)
+        let pcm
+        try { pcm = decodeWav(bytes) } catch { pcm = fromAudioBuffer(buf) }
+        registerSource(id, source, pcm)
+        if (!player.current) player.current = await LivePlayer.create(ctx)
+        if (!alive) return
+        player.current.setSource(pcm)
+        setSrc(pcm)
+        window.__ripperTest = { ...(window.__ripperTest || {}), editorSource: pcm } // e2e: the audio the pads play
         setBlobUrl(url)
         setBuffer(buf)
       } catch (e) {
@@ -139,11 +165,18 @@ function Editor({ id, source }) {
   const playheadTime = useCallback(() => wave.current?.getCurrentTime() ?? 0, [])
   const defaultRegion = useCallback(() => (analysis ? barsFrom(playheadTime(), DEFAULT_BARS, analysis.bpm, analysis.downbeat, duration) : null), [analysis, duration, playheadTime])
 
+  const bankRef = useRef(bank)
+  useEffect(() => { bankRef.current = bank }, [bank])
+  const setSelectedId = useCallback((sid) => {
+    setSelectedIdState(sid)
+    const sl = sid && histRef.current.present.banks[bankRef.current]?.slices.find((x) => x.id === sid)
+    if (sl) setSelectedPad(sl.pad)
+  }, [])
   const setSelection = useCallback((sel) => { setSelectionState(sel); if (!sel) anchorBar.current = null }, [])
 
   const setBank = useCallback((b) => {
     setBankState(b)
-    setSelectedId(null)
+    setSelectedIdState(null)
     const region = histRef.current.present.banks[b]?.chop?.region
     if (region) setSelectionState(region) // the waveform shows what this bank was chopped from
   }, [])
@@ -206,7 +239,7 @@ function Editor({ id, source }) {
     if (into === 'base') setHistory(initHistory(r.program))
     else commit(r.program, coalesce)
     setBankState(r.bank)
-    setSelectedId(null)
+    setSelectedIdState(null)
     setSelectionState(region)
     if (r.dropped > 0) {
       notify(`${r.dropped} slice(s) didn't fit: ${allowedBanks < BANK_COUNT ? 'banks C–H are a Pro feature' : 'the banks after this one are in use'}.`, 'info')
@@ -279,17 +312,30 @@ function Editor({ id, source }) {
     setTimeout(() => setActivePads((s) => { const n = new Set(s); n.delete(i); return n }), 120)
   }, [])
 
-  const playSlice = useCallback((s, pad = -1) => {
-    if (s) player.current?.play(s, { bank, pad, mono: histRef.current.present.banks[bank].mono })
+  const playSlice = useCallback((s, pad = -1, vel = 127) => {
+    if (s) player.current?.play(s, { bank, pad, vel, mono: histRef.current.present.banks[bank].mono, pitchedKey: pitchedKey(s) })
   }, [bank])
 
-  const triggerPad = useCallback((pad) => {
-    const s = slices[pad]
+  const triggerPad = useCallback((pad, vel = 127) => {
+    const s = padSlice(cur, pad)
+    setSelectedPad(pad)
     if (!s) return
-    playSlice(s, pad)
+    playSlice(s, pad, typeof vel === 'number' ? vel : 127)
     flashPad(pad)
-    setSelectedId(s.id)
-  }, [slices, playSlice, flashPad])
+    setSelectedIdState(s.id)
+  }, [cur, playSlice, flashPad])
+
+  // keep-length pads: fetch their pitch-shifted copies into the engine
+  useEffect(() => {
+    if (!player.current) return
+    for (const b of program.banks) {
+      for (const s of b.slices) {
+        const key = pitchedKey(s)
+        const p = key && getPitched(id, s)
+        if (p) p.then((pcm) => player.current?.setPitched(key, pcm)).catch((e) => notify(`Keep length: ${e.message}`, 'error'))
+      }
+    }
+  }, [program, id, notify, src])
 
   const releasePad = useCallback((pad) => player.current?.release(bank, pad), [bank])
 
@@ -304,9 +350,60 @@ function Editor({ id, source }) {
   const updateSlice = useCallback((sid, patch) => editSlices((list) => list.map((s) => (s.id === sid ? { ...s, ...patch } : s)),
     `slice:${sid}:${Object.keys(patch).join(',')}`), [editSlices])
 
+  // edges dragged on the main waveform: grid snap (chop settings), zero crossing + link (trim settings)
   const onRegionChange = useCallback((sid, { start, end }) => {
-    editSlices((list) => list.map((s) => (s.id === sid ? { ...s, start: snapT(start), end: Math.max(snapT(end), snapT(start) + MIN_SLICE) } : s)))
-  }, [snapT, editSlices])
+    const s = slices.find((x) => x.id === sid)
+    if (!s) return
+    const zero = (t) => (trimOpts.zero && src ? snapZero(src, t) : t)
+    let list = slices
+    if (Math.abs(start - s.start) > 1e-6) list = moveEdge(list, sid, 'start', zero(snapT(start)), { link: trimOpts.link, duration })
+    if (Math.abs(end - s.end) > 1e-6) list = moveEdge(list, sid, 'end', zero(snapT(end)), { link: trimOpts.link, duration })
+    if (list !== slices) editSlices(() => list)
+  }, [slices, snapT, trimOpts, src, duration, editSlices])
+
+  // --- trim editor ---------------------------------------------------------------------------
+  const trimSlice = slices.find((s) => s.id === trimId) || null
+  const openTrim = useCallback((pad) => {
+    const s = padSlice(histRef.current.present.banks[bank], pad)
+    if (s) { setTrimId(s.id); setSelectedIdState(s.id); setSelectedPad(pad) }
+  }, [bank])
+  const closeTrim = useCallback(() => { setTrimId(null); setAudition(false) }, [])
+  const applyTrim = useCallback((list, coalesce) => editSlices(() => list, coalesce), [editSlices])
+  useEffect(() => {
+    if (trimOpts.snap === 'transient' && trimId && !onsets) onsetsFor(chop.sensitivity).then((o) => setOnsets(o.onsets)).catch(() => {})
+  }, [trimOpts.snap, trimId, onsets, onsetsFor, chop.sensitivity])
+  // loop audition: replays from the start on every change
+  useEffect(() => {
+    const p = player.current
+    if (!audition || !trimSlice || !p || !src) return undefined
+    const dur = Math.max(0.02, voiceFrames(src, trimSlice, src.sr) / src.sr)
+    const ctx = p.ctx
+    p.stopAll()
+    let next = ctx.currentTime + 0.03
+    const opts = { bank, pad: trimSlice.pad, mono: true, pitchedKey: pitchedKey(trimSlice) }
+    const tick = () => {
+      while (next < ctx.currentTime + 0.2) { p.play(trimSlice, { ...opts, when: next }); next += dur }
+    }
+    tick()
+    const t = setInterval(tick, 50)
+    return () => { clearInterval(t); p.stopAll() }
+  }, [audition, trimSlice, src, bank])
+
+  // --- pad management ------------------------------------------------------------------------
+  const copyPad = useCallback((pad = selectedPad) => {
+    const s = padSlice(histRef.current.present.banks[bank], pad)
+    if (!s) return
+    padClipboard = { key: cacheKey, slice: padSettings(s) }
+    notify(`Copied ${s.name}`, 'info')
+  }, [bank, selectedPad, cacheKey, notify])
+  const pastePadAt = useCallback((pad = selectedPad) => {
+    if (!padClipboard) return
+    if (padClipboard.key !== cacheKey) return notify('Pads can be pasted within the same track (and stem).', 'info')
+    commit((p) => pastePad(p, bank, pad, padClipboard.slice))
+  }, [bank, selectedPad, cacheKey, commit, notify])
+  const swap = useCallback((a, b) => { commit((p) => swapPads(p, bank, a, b)); setSelectedPad(b) }, [commit, bank])
+  const clearOnePad = useCallback((pad) => commit((p) => clearPad(p, bank, pad)), [commit, bank])
+  const padInfo = useMemo(() => ({}), [])
 
   const onRegionCreate = useCallback(({ start, end }) => {
     if (slices.length >= PADS_PER_BANK) return notify(`Bank ${BANKS[bank]} is full (16 pads) — pick an empty bank first.`, 'info')
@@ -325,6 +422,7 @@ function Editor({ id, source }) {
     })
   }, [snapT, playheadTime, selection, defaultRegion, slices.length, bank, source, editSlices, notify])
 
+  const selectedSlice = padSlice(cur, selectedPad)
   const deleteSlice = useCallback((sid) => editSlices((list) => list.filter((s) => s.id !== sid)), [editSlices])
   const setMono = useCallback((mono) => commit((p) => updateBank(p, bank, { mono })), [commit, bank])
   const chokeAll = useCallback((on) => editSlices((list) => list.map((s) => ({ ...s, choke: on }))), [editSlices])
@@ -378,7 +476,7 @@ function Editor({ id, source }) {
 
   // key up (note-on pads) + Ctrl/Cmd+Z / Ctrl/Cmd+Shift+Z / Ctrl+Y
   const keyRefs = useRef({})
-  useEffect(() => { keyRefs.current = { releasePad, doUndo, doRedo } })
+  useEffect(() => { keyRefs.current = { releasePad, doUndo, doRedo, copyPad, pastePadAt } })
   useEffect(() => {
     const up = (e) => {
       const pad = keyToPad(e.code) >= 0 ? keyToPad(e.code) : keyToPad(e.key)
@@ -389,6 +487,8 @@ function Editor({ id, source }) {
       const k = e.key.toLowerCase()
       if (k === 'z' && !e.shiftKey) { e.preventDefault(); keyRefs.current.doUndo() }
       else if ((k === 'z' && e.shiftKey) || k === 'y') { e.preventDefault(); keyRefs.current.doRedo() }
+      else if (k === 'c' && !window.getSelection?.()?.toString()) { e.preventDefault(); keyRefs.current.copyPad() }
+      else if (k === 'v') { e.preventDefault(); keyRefs.current.pastePadAt() }
     }
     window.addEventListener('keyup', up)
     window.addEventListener('keydown', down)
@@ -400,7 +500,7 @@ function Editor({ id, source }) {
       const res = await host.download({
         path: `/tracks/${id}/export`,
         filename: buildFilename(track.title, analysis.bpm, analysis.key, s.name),
-        body: { ...options, slices: [toApiSlice(s)], format: 'wav' },
+        body: { ...options, slices: await apiSlices(id, [s]), format: 'wav' },
       })
       notify(`Saved ${res.path.split(/[\\/]/).pop()}`, 'success', { label: 'Show in folder', run: () => host.showItemInFolder(res.path) })
     } catch (e) {
@@ -436,7 +536,8 @@ function Editor({ id, source }) {
         <Waveform ref={wave} audioBuffer={buffer} url={blobUrl} bpm={analysis.bpm} downbeat={analysis.downbeat}
           slices={slices} selectedId={selectedId} loop={loop} selection={selection}
           dragMode={chop.mode === 'manual' ? 'slice' : 'select'}
-          onSliceChange={onRegionChange} onSelect={(sid, { play } = {}) => { setSelectedId(sid); if (play) { const i = slices.findIndex((s) => s.id === sid); playSlice(slices[i], i) } }}
+          onSliceChange={onRegionChange} onSelect={(sid, { play } = {}) => { setSelectedId(sid); if (play) { const sl = slices.find((s) => s.id === sid); if (sl) playSlice(sl, sl.pad) } }}
+          onTrim={(sid) => { const sl = slices.find((s) => s.id === sid); if (sl) openTrim(sl.pad) }}
           onCreate={onRegionCreate} onSelectionChange={onSelectionChange} onBarClick={onBarClick}
           onLoopChange={(r) => setLoop((l) => ({ ...l, start: snapT(r.start), end: snapT(r.end) }))}
           onTime={onTime} onPlayState={setPlaying} zoom={zoom} follow={follow} />
@@ -485,22 +586,48 @@ function Editor({ id, source }) {
 
       <div className="editor-body">
         <PadGrid banks={program.banks} bank={bank} setBank={setBank} allowedBanks={allowedBanks} activePads={activePads}
-          selectedId={selectedId} onTrigger={triggerPad} onRelease={releasePad} onMono={setMono} onChokeAll={chokeAll}
-          onClear={clearCurrent} onStop={stopAll} trackId={id} options={stableOptions} />
+          selectedPad={selectedPad} onTrigger={triggerPad} onRelease={releasePad} onMono={setMono} onChokeAll={chokeAll}
+          onClear={clearCurrent} onStop={stopAll} trackId={id} options={stableOptions} bankInfo={padInfo}
+          onSelectPad={setSelectedPad} onSwap={swap} onTrim={openTrim} onMenu={(pad, at) => setMenu({ pad, at })} />
         <div className="editor-side">
-          <ExportPanel track={track} slices={slices} bank={bank} options={options} setOptions={setOptions} />
+          {sideTab === 'slices' && <ExportPanel track={track} slices={slices} bank={bank} options={options} setOptions={setOptions} />}
           <div className="panel slices-panel">
-            <div className="panel-title">Slices · Bank {BANKS[bank]} <span className="muted small">drag ⠿ into your DAW</span></div>
-            <div className="slice-list" data-testid="slice-list">
-              {slices.map((s, i) => (
-                <SliceRow key={s.id} slice={s} index={i} selected={s.id === selectedId} onSelect={setSelectedId}
-                  onChange={updateSlice} onPlay={(sl) => playSlice(sl, i)} onDelete={deleteSlice} onDownload={downloadSlice}
-                  trackId={id} options={stableOptions} />
+            <div className="panel-title side-tabs">
+              {[['slices', `Slices · Bank ${BANKS[bank]}`], ['pad', 'Pad']].map(([k, l]) => (
+                <button key={k} className={`side-tab ${sideTab === k ? 'side-tab-on' : ''}`} onClick={() => setSideTab(k)} data-testid={`side-tab-${k}`}
+                  title={k === 'pad' ? 'Shape the selected pad: tune, envelope, filter, velocity, pan' : 'The slices of this bank'}>{l}</button>
               ))}
-              {slices.length === 0 && <div className="muted">Empty bank — select a region and hit Chop.</div>}
+              {sideTab === 'slices' && <span className="muted small">drag ⠿ into your DAW · double-click to trim</span>}
             </div>
+            {sideTab === 'slices' && (
+              <div className="slice-list" data-testid="slice-list">
+                {slices.map((s, i) => (
+                  <SliceRow key={s.id} slice={s} index={i} selected={s.id === selectedId} onSelect={setSelectedId}
+                    onChange={updateSlice} onPlay={(sl) => playSlice(sl, sl.pad)} onDelete={deleteSlice} onDownload={downloadSlice}
+                    onTrim={() => openTrim(s.pad)} trackId={id} options={stableOptions} />
+                ))}
+                {slices.length === 0 && <div className="muted">Empty bank — select a region and hit Chop.</div>}
+              </div>
+            )}
+            {sideTab === 'pad' && (
+              <div className="slice-list">
+                <PadPanel slice={selectedSlice} bank={bank} onAudition={() => selectedSlice && triggerPad(selectedPad)}
+                  onChange={(patch) => selectedSlice && updateSlice(selectedSlice.id, patch)} />
+              </div>
+            )}
           </div>
         </div>
+        {trimSlice && src && (
+          <TrimEditor slice={trimSlice} slices={slices} bank={bank} src={src} opts={trimOpts} setOpts={setTrimOpts}
+            ctx={{ src, onsets, bpm: analysis.bpm, downbeat: analysis.downbeat, divisionBeats: divisionBeats(chop.snapDivision), duration }}
+            onApply={applyTrim} audition={audition} setAudition={setAudition} onClose={closeTrim} />
+        )}
+        {menu && (
+          <PadMenu at={menu.at} slice={padSlice(cur, menu.pad)} canPaste={!!padClipboard} onClose={() => setMenu(null)}
+            onRename={(name) => { const s = padSlice(cur, menu.pad); if (s) updateSlice(s.id, { name }) }}
+            onColor={(color) => { const s = padSlice(cur, menu.pad); if (s) updateSlice(s.id, { color }) }}
+            onCopy={() => copyPad(menu.pad)} onPaste={() => pastePadAt(menu.pad)} onTrim={() => openTrim(menu.pad)} onClear={() => clearOnePad(menu.pad)} />
+        )}
       </div>
     </div>
   )

@@ -3,7 +3,8 @@ import { evenSlices, gridSlices, MIN_SLICE, selectionSlices } from '../src/lib/g
 import { barAt, barRange, barsFrom, formatBarPos, snapSelection } from '../src/lib/selection.js'
 import { chopBanks, emptyProgram, nextEmptyBank, placeChop, renumberBank, updateBank, updateSlices } from '../src/lib/program.js'
 import { canRedo, canUndo, initHistory, push, redo, undo } from '../src/lib/history.js'
-import { CUT_FADE, SlicePlayer } from '../src/lib/slicePlayer.js'
+import { Engine } from '../src/dsp/engine.js'
+import { CUT_FADE } from '../src/dsp/params.js'
 
 const BAR128 = 240 / 128
 
@@ -131,99 +132,79 @@ describe('undo / redo', () => {
   })
 })
 
-// --- Web Audio fake: records gain automation and start/stop times ---------------------------
-function fakeCtx() {
-  const param = () => {
-    const events = []
-    return {
-      value: 1, events,
-      setValueAtTime: (v, t) => events.push(['set', v, t]),
-      linearRampToValueAtTime: (v, t) => events.push(['ramp', v, t]),
-      cancelAndHoldAtTime: (t) => events.push(['hold', t]),
-      cancelScheduledValues: (t) => events.push(['cancel', t]),
-    }
-  }
-  const node = () => ({ connect: (n) => n })
-  const sources = []
-  const ctx = {
-    currentTime: 10, state: 'running', destination: {}, sources,
-    resume: () => {},
-    createGain: () => ({ ...node(), gain: param() }),
-    createBufferSource: () => {
-      const s = { ...node(), started: null, stopped: null }
-      s.connect = (g) => { s.gain = g; return g }
-      s.start = (t, off, dur) => { s.started = [t, off, dur] }
-      s.stop = (t) => { s.stopped = t }
-      sources.push(s)
-      return s
-    },
-  }
-  return ctx
+// Pad behaviour, through the pad engine (src/dsp/engine.js) the AudioWorklet runs.
+const SR = 48000
+function engine() {
+  const d = new Float32Array(SR * 10).fill(0.5) // steady DC: the level is the gain
+  const e = new Engine(SR)
+  e.setSource('main', [d], SR)
+  return e
 }
+const level = (e, frames = 1) => { const [L] = e.render(frames); return L[frames - 1] }
 
-describe('pads like an MPC', () => {
-  const buf = { duration: 10, numberOfChannels: 2, sampleRate: 44100, length: 441000 }
-  const s1 = { start: 0, end: 2 }
-  const s2 = { start: 2, end: 4 }
+describe('sampler-style pads', () => {
+  const s1 = { start: 0, end: 2, fadeOut: 0 }
+  const s2 = { start: 2, end: 4, fadeOut: 0 }
 
   it('mono bank: pad 2 cuts pad 1 with a 5 ms fade', () => {
-    const ctx = fakeCtx()
-    const p = new SlicePlayer(ctx)
-    p.buffer = buf
-    p.play(s1, { bank: 0, pad: 0, mono: true, when: 10 })
-    p.play(s2, { bank: 0, pad: 1, mono: true, when: 10.5 })
-    const [a, b] = ctx.sources
-    // the envelope is pinned at the cut (level 1, mid-slice), then ramps to 0 over 5 ms
-    const ev = a.gain.gain.events
-    expect(ev.slice(-3)).toEqual([['cancel', 10.5], ['set', 1, 10.5], ['ramp', 0, 10.5 + CUT_FADE]])
-    expect(a.stopped).toBeLessThanOrEqual(10.5 + 0.01)
-    expect(b.stopped).toBeNull()
+    const e = engine()
+    e.noteOn({ slice: s1, bank: 0, pad: 0, mono: true, frame: 0 })
+    e.noteOn({ slice: { ...s2, gain: -120 }, bank: 0, pad: 1, mono: true, frame: 4800 })
+    const [L] = e.render(4800 + 480)
+    expect(L[4799]).toBeCloseTo(0.5, 6) // full level up to the cut
+    expect(L[4800 + 120]).toBeCloseTo(0.5 * (1 - 120 / (CUT_FADE * SR)), 4) // ramping down
+    expect(Math.abs(L[4800 + 240 + 1])).toBeLessThan(1e-6) // gone after 5 ms
+    expect(e.playing).toBe(1)
   })
 
   it('poly bank: pads ring out; other banks are not cut', () => {
-    const ctx = fakeCtx()
-    const p = new SlicePlayer(ctx)
-    p.buffer = buf
-    p.play(s1, { bank: 0, pad: 0, mono: false })
-    p.play(s2, { bank: 0, pad: 1, mono: false })
-    p.play(s2, { bank: 1, pad: 0, mono: true })
-    expect(ctx.sources.map((s) => s.stopped)).toEqual([null, null, null])
+    const e = engine()
+    e.noteOn({ slice: s1, bank: 0, pad: 0, mono: false, frame: 0 })
+    e.noteOn({ slice: s2, bank: 0, pad: 1, mono: false, frame: 10 })
+    e.noteOn({ slice: s2, bank: 1, pad: 0, mono: true, frame: 20 })
+    expect(level(e, 1000)).toBeCloseTo(1.5, 6)
+    expect(e.playing).toBe(3)
   })
 
   it('choke flags cut each other even in a poly bank', () => {
-    const ctx = fakeCtx()
-    const p = new SlicePlayer(ctx)
-    p.buffer = buf
-    p.play({ ...s1, choke: true }, { bank: 0, pad: 0 })
-    p.play({ ...s2, choke: true }, { bank: 0, pad: 1 })
-    expect(ctx.sources[0].stopped).not.toBeNull()
+    const e = engine()
+    e.noteOn({ slice: { ...s1, choke: true }, bank: 0, pad: 0, frame: 0 })
+    e.noteOn({ slice: { ...s2, choke: true }, bank: 0, pad: 1, frame: 10 })
+    expect(level(e, 1000)).toBeCloseTo(0.5, 6)
+    expect(e.playing).toBe(1)
   })
 
   it('note-on pads stop on release; one-shots do not', () => {
-    const ctx = fakeCtx()
-    const p = new SlicePlayer(ctx)
-    p.buffer = buf
-    p.play({ ...s1, padMode: 'noteon', fadeOut: 0.5 }, { bank: 0, pad: 0 })
-    p.play({ ...s2 }, { bank: 0, pad: 1 })
-    p.release(0, 0)
-    p.release(0, 1)
-    expect(ctx.sources[0].stopped).toBeCloseTo(10 + CUT_FADE + 0.001)
-    expect(ctx.sources[1].stopped).toBeNull()
-    // a cut inside the fade-out starts from the faded level, not from full volume
-    ctx.currentTime = 11.75
-    const v = p.play({ ...s1, fadeOut: 0.5 }, { bank: 2, pad: 0, when: 11 })
-    v.stop(12.75)
-    expect(ctx.sources[2].gain.gain.events).toContainEqual(['set', 0.5, 12.75])
+    const e = engine()
+    e.noteOn({ slice: { ...s1, padMode: 'noteon' }, bank: 0, pad: 0, frame: 0 })
+    e.noteOn({ slice: s2, bank: 0, pad: 1, frame: 0 })
+    e.render(100)
+    e.noteOff(0, 0, e.frame)
+    e.noteOff(0, 1, e.frame)
+    expect(level(e, 1000)).toBeCloseTo(0.5, 6) // only the one-shot is left
+    expect(e.playing).toBe(1)
+  })
+
+  it('a cut inside the fade-out starts from the faded level, not from full volume', () => {
+    const e = engine()
+    e.noteOn({ slice: { start: 0, end: 1, fadeOut: 0.5 }, bank: 2, pad: 0, frame: 0 })
+    const [L] = e.render(Math.round(0.75 * SR))
+    const at = L[L.length - 1]
+    expect(at).toBeCloseTo(0.25, 2) // half way down the fade-out
+    e.stopAll(e.frame)
+    const [M] = e.render(10)
+    expect(M[0]).toBeLessThanOrEqual(at + 1e-6)
   })
 
   it('stopAll fades everything out', () => {
-    const ctx = fakeCtx()
-    const p = new SlicePlayer(ctx)
-    p.buffer = buf
-    p.play(s1, { bank: 0, pad: 0 })
-    p.play(s2, { bank: 3, pad: 4 })
-    p.stopAll()
-    expect(ctx.sources.every((s) => s.stopped !== null)).toBe(true)
-    expect(p.playing).toBe(0)
+    const e = engine()
+    e.noteOn({ slice: s1, bank: 0, pad: 0, frame: 0 })
+    e.noteOn({ slice: s2, bank: 3, pad: 4, frame: 0 })
+    e.render(100)
+    e.stopAll()
+    e.render(1) // events apply on the next sample
+    expect(e.playing).toBe(0)
+    e.render(1000)
+    expect(e.voices).toHaveLength(0)
   })
 })

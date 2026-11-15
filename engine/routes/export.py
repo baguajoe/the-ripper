@@ -7,11 +7,11 @@ import shutil
 import uuid
 from pathlib import Path
 
-from flask import Blueprint, Response, current_app, jsonify
+from flask import Blueprint, Response, current_app, jsonify, request
 
 from .. import config, runtime, workers
 from ..app import ApiError
-from ..services import exporter, media, separator_ai, tools
+from ..services import clips, exporter, media, separator_ai, tools
 from ..services.exporter import ExportOptions, Slice
 from .common import body, require_feature, require_track, run_quick, state
 
@@ -95,6 +95,8 @@ def _slices(data: dict, duration: float) -> list[Slice]:
             raise ApiError(400, "invalid_slices", str(exc) or f"slice {i + 1} is invalid")
         if sl.start >= duration:
             raise ApiError(400, "invalid_slices", f"slice {i + 1} starts after the end of the track")
+        if sl.clip and not clips.exists(state().library.root, sl.clip):
+            raise ApiError(404, "clip_not_found", f"slice {i + 1}: rendered clip not found - try again")
         sl.end = min(sl.end, duration)
         out.append(sl)
     return out
@@ -238,3 +240,48 @@ def render(track_id: str):
     spec = _spec(track, data, {"kind": "dir", "dir": str(target)}, kind=kind,
                  folders=bool(data.get("folders", False)))
     return jsonify(files=_render(track, spec)["files"])
+
+
+# --- rendered clips (v1.2): the UI's pad engine renders shaped pads, the exporter packages them ---
+@bp.post("/clips")
+def upload_clip():
+    """Body: planar little-endian float32 (channel 0, then channel 1). Headers X-Ripper-SR and
+    X-Ripper-Channels. Returns {clip: id} for use as `clip` on an export slice."""
+    try:
+        sr = int(request.headers.get("X-Ripper-SR", "0"))
+        ch = int(request.headers.get("X-Ripper-Channels", "2"))
+        cid = clips.store(state().library.root, request.get_data(cache=False), sr, ch)
+    except ValueError as exc:
+        raise ApiError(400, "invalid_clip", str(exc))
+    return jsonify(clip=cid)
+
+
+@bp.post("/tracks/<track_id>/pitch")
+def pitch(track_id: str):
+    """A slice transposed by `semitones` with its length kept (keep-length pad tuning).
+    body: {start, end, semitones, source='mix'} -> planar float32 bytes, same headers as /clips."""
+    track = require_track(track_id, ready=True)
+    data = body()
+    try:
+        start, end = float(data["start"]), float(data["end"])
+        st = float(data["semitones"])
+    except (KeyError, TypeError, ValueError):
+        raise ApiError(400, "invalid_request", "start, end and semitones are required numbers")
+    if not (0 <= start < end <= track["duration"] + 1e-6) or end - start > 120:
+        raise ApiError(400, "invalid_request", "start/end must be inside the track (max 120 s)")
+    if not -48 <= st <= 48:
+        raise ApiError(400, "invalid_request", "semitones must be within +-48")
+    src = str(data.get("source") or "mix")
+    if src != "mix" and src not in (track.get("stems") or {}).get("names", []):
+        raise ApiError(404, "not_found", f"No stem '{src}'")
+    tmp = Path(current_app.config["RIPPER_STORAGE"]) / ".exports" / f"{uuid.uuid4().hex}.f32"
+    try:
+        res = run_quick("engine.services.pipeline:pitch_slice",
+                        (str(state().library.track_dir(track_id)), src, start, end, st, str(tmp)), "Pitch shift")
+        raw = tmp.read_bytes()
+    finally:
+        tmp.unlink(missing_ok=True)
+    resp = Response(raw, mimetype="application/octet-stream")
+    resp.headers["X-Ripper-SR"] = str(res["sr"])
+    resp.headers["X-Ripper-Channels"] = str(res["channels"])
+    return resp

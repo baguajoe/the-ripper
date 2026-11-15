@@ -174,7 +174,7 @@ key) is held. Esc / Stop fades out everything.
 ## 4. Slice rendering (export, drag, pads)
 
 Slice object (engine JSON): `{start, end, name, reverse, gain (dB), fade_in (s), fade_out (s),
-source ("mix" | stem name)}`. UI default `fade_out = 0.005` (de-click).
+source ("mix" | stem name), clip? (see 4.2)}`. UI default `fade_out = 0.005` (de-click).
 
 Processing order:
 
@@ -193,10 +193,46 @@ Processing order:
 8. **Normalize** (if enabled): peak → −0.3 dBFS (`× 0.96605 / peak`)
 9. **Clip** to [−1, 1]
 
-Pads play the same slice through Web Audio: `BufferSource.start(t0, start, end−start)` (or a
-reversed copy of the segment), gain node at `10^(gain/20)` with the same linear fades.
-**Choke**: triggering a choke-enabled slice stops every other playing choke-enabled slice
-(one choke group).
+Pads play through **the pad engine** (`ui/src/dsp/`, plain JavaScript): live inside an
+AudioWorklet, offline for exports, resampling and tests — one implementation, so a pad sounds
+exactly like its export. Its rounding matches the steps above (Python's round-half-even), so an
+unshaped pad is bit-identical to the exporter's cut. **Choke**: triggering a choke-enabled slice
+stops every other playing choke-enabled slice (one choke group).
+
+### 4.1 Pad sound shaping (v1.2)
+
+Extra slice fields (UI, camelCase; all optional, defaults = no change):
+`tune` (semitones, −24..24), `fine` (cents, −50..50), `keepLength` (bool),
+`env {a, d, s, r}` (seconds / sustain 0..1), `filter {type: off|lp|hp|bp, cutoff Hz, res 0..1}`,
+`velVol` (0..1, default 1), `velFilter` (0..1), `pan` (−1..1), `color`, `pad` (0..15).
+
+Per output sample, a voice does: read the source at `a + k·rate` (reversed: `a + n−1 − k·rate`),
+cubic (Catmull-Rom) interpolation, exact at whole positions →
+gain × fades (in **source** samples, as above) × envelope (output time) × velocity gain →
+biquad (RBJ cookbook, Q = 0.7071 + res·(12 − 0.7071), the cutoff lowered by
+`velFilter·4·(1 − vel/127)` octaves) → pan (the Web Audio StereoPanner law).
+
+* `rate = 2^((tune + fine/100)/12) · source_sr/out_sr` — pitch changes speed (and length).
+* **Keep length**: the engine makes a pitch-shifted copy of the slice with the same length
+  (`POST /tracks/<id>/pitch {start, end, semitones, source}` → planar float32, headers
+  `X-Ripper-SR`, `X-Ripper-Channels`; Signalsmith Stretch, seed 1) and the voice plays it at
+  rate 1.
+* Velocity gain = `(1 − velVol) + velVol · vel/127`. Pads hit from the mouse / keyboard and
+  exports use velocity 127.
+* Envelope: linear attack 0→1, linear decay 1→s, hold s; release is linear from the level at
+  the moment the gate closes. Note-on pads close the gate on release (no release = the 5 ms
+  de-click); a one-shot's gate closes `r` seconds before its end so the release ends with it.
+
+### 4.2 Rendered clips
+
+A slice whose shaping isn't all defaults (or, from v1.2 phase 2, sits in a vintage bank /
+has effects) is exported as a **clip**: the UI renders it with the pad engine at the source
+rate (one-shot, velocity 127, plus any effect tail), uploads it with
+`POST /clips` (body: planar little-endian float32, headers `X-Ripper-SR`,
+`X-Ripper-Channels`; reply `{clip: sha1}`), and the export slice carries `"clip": "<id>"`.
+For a clip the exporter skips steps 1–5 above (the clip *is* the processed slice), takes
+`num_beats` from the clip's length, and does trim / resample / loop-lock / normalize / clip
+as usual. Clips live in `<storage>/.clips/` and are deleted after 24 h.
 
 Stems in kits are exported full length, not normalised, `num_beats = round(dur·bpm/60)`, loop flag.
 
@@ -247,7 +283,7 @@ Python: `b"acid" + pack("<I", 24) + pack("<IHHfIHHf", flags, 60, 0x8000, 0.0, be
   `off = max(on + 1, round((end − origin)·tps))`.
 * Events sorted by `(tick, note_off before note_on)` then written as delta times.
 
-Drop it on FL Slicer / Ableton Drum Rack / Simpler (slice mode) / MPC / Logic Quick Sampler:
+Drop it on FL Slicer / Ableton Drum Rack / Simpler (slice mode) / hardware samplers / Logic Quick Sampler:
 slice *n* sits on note `36 + n − 1` in original timing, so the beat replays as-is.
 
 ## 7. Filenames & kit layout

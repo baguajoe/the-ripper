@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import { useApp } from '../context.js'
 import { useNativeDrag } from '../hooks/useNativeDrag.js'
-import { dragSpec, toApiSlice } from '../lib/exportSpec.js'
+import { apiSlices, dragSpec } from '../lib/exportSpec.js'
 import { baseName } from '../lib/filenames.js'
 import { BANKS } from '../lib/pads.js'
 
@@ -43,7 +43,7 @@ export default function ExportPanel({ track, slices, bank = 0, options, setOptio
       const res = await host.download({
         path: `/tracks/${track.id}/export`,
         filename: `${kitBase}_Kit.zip`,
-        body: { ...options, slices: slices.map(toApiSlice), include_stems: true, include_midi: true },
+        body: { ...options, slices: await apiSlices(track.id, slices), include_stems: true, include_midi: true },
       })
       saved(res)
     } catch (e) {
@@ -57,7 +57,7 @@ export default function ExportPanel({ track, slices, bank = 0, options, setOptio
     setBusy(kind)
     try {
       const res = await host.exportToFolder({
-        trackId: track.id, kind, slices: slices.map(toApiSlice), options,
+        trackId: track.id, kind, slices: await apiSlices(track.id, slices), options,
         subfolder: `${kitBase}${kind === 'kit' ? '_Kit' : '_Slices'}`,
       })
       if (res) setFolder(res.folder)

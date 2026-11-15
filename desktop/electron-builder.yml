@@ -32,6 +32,8 @@ extraResources:
     filter: ["LICENSE.md", "BUILD-INFO.txt"]
   - from: ../LICENSES.md
     to: licenses/LICENSES.md
+  - from: ../licenses/signalsmith-stretch
+    to: licenses/signalsmith-stretch
 asarUnpack:
   - assets/drag.png
 mac:

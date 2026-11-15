@@ -21,7 +21,7 @@ const TIMELINE_H = 22 // timeline plugin row under the waveform
  */
 const Waveform = forwardRef(function Waveform(
   { audioBuffer, url, bpm, downbeat, slices, selectedId, loop, selection, dragMode = 'select',
-    onSliceChange, onSelect, onCreate, onLoopChange, onSelectionChange, onBarClick, onReady, onTime, onPlayState,
+    onSliceChange, onSelect, onTrim, onCreate, onLoopChange, onSelectionChange, onBarClick, onReady, onTime, onPlayState,
     zoom = 0, follow = false },
   ref,
 ) {
@@ -61,7 +61,7 @@ const Waveform = forwardRef(function Waveform(
   useEffect(() => { loopRef.current = loop }, [loop])
   const modeRef = useRef(dragMode)
   useEffect(() => { modeRef.current = dragMode }, [dragMode])
-  useEffect(() => { cbs.current = { onSliceChange, onSelect, onCreate, onLoopChange, onSelectionChange, onBarClick, onReady, onTime, onPlayState } })
+  useEffect(() => { cbs.current = { onSliceChange, onSelect, onTrim, onCreate, onLoopChange, onSelectionChange, onBarClick, onReady, onTime, onPlayState } })
 
   useImperativeHandle(ref, () => ({
     playPause: () => ws.current?.playPause(),
@@ -147,6 +147,10 @@ const Waveform = forwardRef(function Waveform(
       if (r.id === '__loop') cbs.current.onLoopChange?.({ start: r.start, end: r.end })
       else if (r.id === '__sel') cbs.current.onSelectionChange?.({ start: r.start, end: r.end })
       else cbs.current.onSliceChange?.(r.id, { start: r.start, end: r.end })
+    })
+    reg.on('region-double-clicked', (r, e) => {
+      e.stopPropagation()
+      if (r.id !== '__loop' && r.id !== '__sel') cbs.current.onTrim?.(r.id)
     })
     reg.on('region-clicked', (r, e) => {
       e.stopPropagation()

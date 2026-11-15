@@ -66,10 +66,10 @@ def create_app(storage_dir: str | Path | None = None, *, pro_enabled: bool | Non
     # Access preflight (Access-Control-Request-Private-Network) with "true" instead of
     # flask-cors' default "false", which would block every request from the app's page.
     CORS(app, resources={r"/api/*": {"origins": origins}},
-         allow_headers=["Content-Type", "X-Ripper-Token", "Range"],
+         allow_headers=["Content-Type", "X-Ripper-Token", "Range", "X-Ripper-SR", "X-Ripper-Channels"],
          max_age=600, allow_private_network=True,
          expose_headers=["Content-Disposition", "Content-Range", "Content-Length",
-                         "Accept-Ranges", "X-Ripper-Filename"])
+                         "Accept-Ranges", "X-Ripper-Filename", "X-Ripper-SR", "X-Ripper-Channels"])
 
     @app.before_request
     def guard():
@@ -119,13 +119,16 @@ def create_app(storage_dir: str | Path | None = None, *, pro_enabled: bool | Non
     app.register_blueprint(addon_routes.bp, url_prefix=config.API_PREFIX)
 
     if purge:
+        from .services import clips
         state.library.purge(config.PURGE_AGE_SECONDS)
+        clips.purge(state.library.root, config.PURGE_AGE_SECONDS)
         if not testing:
             def purger():
                 while True:
                     time.sleep(config.PURGE_INTERVAL_SECONDS)
                     try:
                         state.library.purge(config.PURGE_AGE_SECONDS)
+                        clips.purge(state.library.root, config.PURGE_AGE_SECONDS)
                     except Exception:  # pragma: no cover
                         log.exception("purge failed")
             threading.Thread(target=purger, daemon=True, name="ripper-purge").start()

@@ -24,9 +24,14 @@ function markDraggingOut() {
 export function useNativeDrag(getSpec) {
   const { host, notify } = useApp()
   const last = useRef('')
-  const prepare = useCallback(() => {
-    const spec = getSpec()
+  const prepare = useCallback(async () => {
+    let spec = getSpec()
     if (!spec || !host.capabilities.nativeDrag) return
+    if (spec.pending) { // a shaped pad: render its clip first
+      try { await spec.pending() } catch (e) { notify(e.message, 'error'); return }
+      spec = getSpec()
+      if (!spec || spec.pending) return
+    }
     const key = JSON.stringify(spec)
     if (key === last.current) return
     last.current = key
@@ -38,9 +43,14 @@ export function useNativeDrag(getSpec) {
     if (!spec) return
     if (!host.capabilities.nativeDrag) return
     e.preventDefault()
+    if (spec.pending) {
+      notify('Still preparing that file — drag again in a moment.', 'info')
+      prepare()
+      return
+    }
     markDraggingOut()
     host.startDrag(spec)
-  }, [getSpec, host])
+  }, [getSpec, host, notify, prepare])
 
   return { draggable: true, onDragStart, onMouseEnter: prepare, onFocus: prepare }
 }

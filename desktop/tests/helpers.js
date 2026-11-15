@@ -38,6 +38,11 @@ function inspectWav(file) {
   return JSON.parse(execFileSync(python(), ['-c', code, file], { cwd: ROOT }).toString())
 }
 
+/** Run Python (with numpy / soundfile and the engine importable); `args` arrive as sys.argv[1:]. Returns its JSON. */
+function pyJson(code, ...args) {
+  return JSON.parse(execFileSync(python(), ['-c', code, ...args.map(String)], { cwd: ROOT, maxBuffer: 64 * 1024 * 1024 }).toString())
+}
+
 /** Per-test folders. They live under a "J. Test" folder (a space and a period, like
  *  C:\Users\J. Gallop) so every path the app and engine build is exercised with one. */
 function tempDirs() {
@@ -69,4 +74,4 @@ const MANY_CORES_ENV = {
   OMP_NUM_THREADS: '24', OPENBLAS_NUM_THREADS: '24', MKL_NUM_THREADS: '24', NUMBA_NUM_THREADS: '24', VECLIB_MAXIMUM_THREADS: '24',
 }
 
-module.exports = { ROOT, fixtures, inspectWav, tempDirs, appEnv, MANY_CORES_ENV, python }
+module.exports = { ROOT, fixtures, inspectWav, tempDirs, appEnv, MANY_CORES_ENV, python, pyJson }

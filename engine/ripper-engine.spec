@@ -10,6 +10,7 @@ ONEFILE = os.environ.get("RIPPER_BUILD_ONEFILE") == "1"
 datas = (collect_data_files("librosa") + collect_data_files("yt_dlp")
          + collect_data_files("yt_dlp_ejs", includes=["**/*.js"]))
 hidden = (collect_submodules("librosa") + collect_submodules("engine") + collect_submodules("yt_dlp_ejs")
+          + collect_submodules("python_stretch")
           + ["soundfile", "soxr", "mido.backends", "sklearn.utils._typedefs"])
 excludes = ["tkinter", "matplotlib", "IPython", "pytest", "Xlib", "PyInstaller"]
 if WITH_AI:

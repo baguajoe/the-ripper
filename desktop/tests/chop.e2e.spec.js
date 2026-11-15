@@ -1,5 +1,5 @@
 // v1.1.3: chop a selection (not the whole song) into pad banks, re-chop on change with undo,
-// and pads that behave like an MPC (mono choke, note-on, stop). Runs against the dev app and,
+// and pads that behave like a classic sampler (mono choke, note-on, stop). Runs against the dev app and,
 // in CI, the INSTALLED app on Windows and macOS.
 const { test, expect, _electron: electron } = require('@playwright/test')
 const fs = require('node:fs')
@@ -44,7 +44,7 @@ const sliceTimes = () => win.locator('[data-testid^="slice-row-"]').evaluateAll(
 const count = () => win.getByTestId('slice-count')
 const mod = process.platform === 'darwin' ? 'Meta' : 'Control'
 
-test('selection chopping, banks, undo/redo, MPC pads', async () => {
+test('selection chopping, banks, undo/redo, sampler pads', async () => {
   const fx = fixtures()
   await expect(win.getByTestId('engine-status')).toHaveAttribute('data-ok', 'true', { timeout: 180_000 })
   await win.getByTestId('file-input').setInputFiles(fx.wav128)
@@ -136,7 +136,7 @@ test('selection chopping, banks, undo/redo, MPC pads', async () => {
   await win.getByTestId('chop-cap').selectOption('4')
   await expect(count()).toHaveText('4 slices')
 
-  // --- pads like an MPC: Mono on by default, Poly, choke all / unchoke all, note-on, stop
+  // --- sampler-style pads: Mono on by default, Poly, choke all / unchoke all, note-on, stop
   await expect(win.getByTestId('bank-mono')).toBeChecked()
   const playing = () => win.evaluate(() => window.__ripperTest?.player?.playing ?? 0)
   await win.getByTestId('pad-0').dispatchEvent('mousedown', { button: 0 })
@@ -165,25 +165,24 @@ test('selection chopping, banks, undo/redo, MPC pads', async () => {
   expect(consoleErrors).toEqual([])
 })
 
-test('mono choke: pad 1 is silent within 10 ms of pad 2 (rendered with real Web Audio)', async () => {
-  // Render the app's own SlicePlayer in an OfflineAudioContext: pad 1, then pad 2 at T.
-  // pad 1's contribution = render(both) - render(pad 2 alone); it must be gone by T + 10 ms.
+test('mono choke: pad 1 is silent within 10 ms of pad 2 (rendered with the app\'s pad engine)', async () => {
+  // Render the app's own pad engine (the code the AudioWorklet runs) offline: pad 1, then pad 2
+  // at T. pad 1's contribution = render(both) - render(pad 2 alone); it must be gone by T + 10 ms.
+  await expect.poll(() => win.evaluate(() => !!window.__ripperTest?.Engine)).toBe(true)
   const r = await win.evaluate(async () => {
-    const { SlicePlayer } = window.__ripperTest
+    const { Engine } = window.__ripperTest
     const sr = 48000
     const T = 0.3
     const render = async (pads, mono) => {
-      const ctx = new OfflineAudioContext(1, sr, sr)
-      const buf = ctx.createBuffer(1, sr * 2, sr)
-      const d = buf.getChannelData(0)
+      const d = new Float32Array(sr * 2)
       for (let i = 0; i < d.length; i++) d[i] = 0.5 * Math.sin((2 * Math.PI * 440 * i) / sr) // loud, steady
-      const p = new SlicePlayer(ctx)
-      p.buffer = buf
+      const e = new Engine(sr)
+      e.setSource('main', [d], sr)
       const s1 = { start: 0, end: 1 }
       const s2 = { start: 1, end: 2, gain: -60 }
-      if (pads.includes(1)) p.play(s1, { bank: 0, pad: 0, mono, when: 0.1 })
-      if (pads.includes(2)) p.play(s2, { bank: 0, pad: 1, mono, when: T })
-      return (await ctx.startRendering()).getChannelData(0)
+      if (pads.includes(1)) e.noteOn({ slice: s1, bank: 0, pad: 0, mono, frame: Math.round(0.1 * sr) })
+      if (pads.includes(2)) e.noteOn({ slice: s2, bank: 0, pad: 1, mono, frame: Math.round(T * sr) })
+      return e.render(sr)[0]
     }
     const peakAfter = async (mono) => {
       const both = await render([1, 2], mono)
