@@ -146,7 +146,9 @@ test('note repeat, live record with quantize, overdub', async () => {
   await win.getByTestId('seq-quantize').selectOption('1/16')
   await win.getByTestId('seq-record').click()
   await expect.poll(transport).toMatchObject({ playing: true, recording: true })
+  await win.waitForTimeout(100)
   for (const k of ['q', 'w', 'e']) { await win.keyboard.press(k); await win.waitForTimeout(260) }
+  await win.waitForTimeout(200) // the last hit reaches the audio thread before Stop
   await win.getByTestId('seq-stop').click()
   await expect.poll(transport).toMatchObject({ playing: false })
   const notes = () => win.locator('[data-testid^="step-"][data-on="1"]').evaluateAll((els) => els.map((e) => e.dataset.testid))
