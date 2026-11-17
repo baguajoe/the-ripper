@@ -146,6 +146,10 @@ Each runs: `vite build` → `python scripts/build_engine.py` (PyInstaller onedir
 
 ### CI
 
+Pushes to `main` and pull requests run the Linux tests only, to save Actions minutes. Everything
+below (Windows/macOS tests, the HQ (AI) add-on, the installers) runs on a `v*` tag, or when you
+start it by hand: **Actions → CI → Run workflow**, or `gh workflow run CI --ref <branch>`.
+
 `.github/workflows/ci.yml` runs lint, build, pytest, vitest, the Electron e2e and the smoke test on
 Ubuntu, Windows and macOS (Demucs on Ubuntu only). It builds the HQ (AI) add-on for `win-cpu`,
 `win-cuda` and `mac-arm64` (each self-tested with 4/6/2 stems, cached), then builds the Windows

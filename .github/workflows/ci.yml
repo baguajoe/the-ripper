@@ -1,8 +1,12 @@
 name: CI
 
+# Private repo: Actions minutes are limited (Windows counts 2x, macOS 10x). Ordinary pushes and
+# pull requests run the Linux tests only. The Windows/macOS tests, the HQ (AI) add-on and the
+# installers run on a v* tag, or when started by hand (Actions -> CI -> Run workflow).
+# Branch pushes are not built on their own; their pull request runs CI instead.
 on:
   push:
-    branches: ["**"]
+    branches: ["main"]
     tags: ["v*"]
   pull_request:
   workflow_dispatch:
@@ -25,7 +29,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
+        os: ${{ fromJSON((startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch') && '["ubuntu-latest", "windows-latest", "macos-latest"]' || '["ubuntu-latest"]') }}
     defaults:
       run:
         shell: bash
@@ -131,6 +135,7 @@ jobs:
   # self-tested (4/6/2 stems on a 10 s clip with the pack's own Python) and cached.
   ai-pack:
     name: AI add-on (${{ matrix.variant }})
+    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
     runs-on: ${{ matrix.os }}
     timeout-minutes: 120
     strategy:
@@ -201,6 +206,7 @@ jobs:
   installers:
     name: Installer (${{ matrix.os }})
     needs: [test, ai-pack]
+    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
     runs-on: ${{ matrix.os }}
     timeout-minutes: 120
     strategy:
@@ -488,5 +494,17 @@ jobs:
           [ -f "$notes" ] || { echo "Release ${GITHUB_REF_NAME}" > /tmp/notes.md; notes=/tmp/notes.md; }
           v="${GITHUB_REF_NAME#v}"
           (cd dist && zip -0 -q "The-Ripper-$v-Windows.zip" *.exe && zip -0 -q "The-Ripper-$v-macOS.zip" *.dmg)
-          gh release create "$GITHUB_REF_NAME" dist/*.exe dist/*.dmg dist/*.zip ai/ripper-ai-*.zip.* ai/ripper-ai-manifest.json \
+          gh release create "$GITHUB_REF_NAME" dist/*.exe dist/*.dmg dist/*.zip \
             --title "The Ripper ${GITHUB_REF_NAME}" --notes-file "$notes" --verify-tag
+      # The app downloads the add-on without a login, so it goes to the public, download-only
+      # repo named by AI_RELEASES_REPO in engine/config.py. GITHUB_TOKEN can't write there:
+      # ADDONS_TOKEN is a fine-grained token with Contents: read and write on that repo only.
+      - name: Publish HQ (AI) add-on
+        env:
+          GH_TOKEN: ${{ secrets.ADDONS_TOKEN }}
+        run: |
+          [ -n "$GH_TOKEN" ] || { echo "::error::ADDONS_TOKEN secret is not set"; exit 1; }
+          repo=$(python -c "import re;print(re.search(r'AI_RELEASES_REPO = \"(.+?)\"', open('engine/config.py').read())[1])")
+          gh release create "$GITHUB_REF_NAME" ai/ripper-ai-*.zip.* ai/ripper-ai-manifest.json -R "$repo" \
+            --title "HQ (AI) add-on for The Ripper ${GITHUB_REF_NAME#v}" \
+            --notes "Downloaded automatically by The Ripper ${GITHUB_REF_NAME#v}. Python, PyTorch and Demucs runtime only; model weights are fetched from their authors at install time."
