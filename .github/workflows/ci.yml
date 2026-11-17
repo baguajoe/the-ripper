@@ -494,5 +494,17 @@ jobs:
           [ -f "$notes" ] || { echo "Release ${GITHUB_REF_NAME}" > /tmp/notes.md; notes=/tmp/notes.md; }
           v="${GITHUB_REF_NAME#v}"
           (cd dist && zip -0 -q "The-Ripper-$v-Windows.zip" *.exe && zip -0 -q "The-Ripper-$v-macOS.zip" *.dmg)
-          gh release create "$GITHUB_REF_NAME" dist/*.exe dist/*.dmg dist/*.zip ai/ripper-ai-*.zip.* ai/ripper-ai-manifest.json \
+          gh release create "$GITHUB_REF_NAME" dist/*.exe dist/*.dmg dist/*.zip \
             --title "The Ripper ${GITHUB_REF_NAME}" --notes-file "$notes" --verify-tag
+      # The app downloads the add-on without a login, so it goes to the public, download-only
+      # repo named by AI_RELEASES_REPO in engine/config.py. GITHUB_TOKEN can't write there:
+      # ADDONS_TOKEN is a fine-grained token with Contents: read and write on that repo only.
+      - name: Publish HQ (AI) add-on
+        env:
+          GH_TOKEN: ${{ secrets.ADDONS_TOKEN }}
+        run: |
+          [ -n "$GH_TOKEN" ] || { echo "::error::ADDONS_TOKEN secret is not set"; exit 1; }
+          repo=$(python -c "import re;print(re.search(r'AI_RELEASES_REPO = \"(.+?)\"', open('engine/config.py').read())[1])")
+          gh release create "$GITHUB_REF_NAME" ai/ripper-ai-*.zip.* ai/ripper-ai-manifest.json -R "$repo" \
+            --title "HQ (AI) add-on for The Ripper ${GITHUB_REF_NAME#v}" \
+            --notes "Downloaded automatically by The Ripper ${GITHUB_REF_NAME#v}. Python, PyTorch and Demucs runtime only; model weights are fetched from their authors at install time."

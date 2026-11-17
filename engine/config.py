@@ -133,15 +133,16 @@ DEMUCS_WEIGHTS = {
 HF_BASE_URL = os.environ.get("RIPPER_HF_BASE_URL", "https://huggingface.co")
 
 # The HQ (AI) add-on runtime (Python + torch + Demucs, no weights) is built per platform in CI
-# and attached to the GitHub release of the same app version.
-GITHUB_REPO = "baguajoe/the-ripper"
+# and attached to a release of the same app version in a separate public, download-only repo
+# (the app's own repo is private, so its release files need a login).
+AI_RELEASES_REPO = "baguajoe/the-ripper-addons"
 AI_PACK_FORMAT = 1
 AI_MANIFEST_NAME = "ripper-ai-manifest.json"
 
 
 def ai_manifest_url() -> str:
     return os.environ.get("RIPPER_AI_MANIFEST_URL") or (
-        f"https://github.com/{GITHUB_REPO}/releases/download/v{ENGINE_VERSION}/{AI_MANIFEST_NAME}")
+        f"https://github.com/{AI_RELEASES_REPO}/releases/download/v{ENGINE_VERSION}/{AI_MANIFEST_NAME}")
 
 
 def is_allowed(feature: str, pro_enabled: bool) -> bool:
